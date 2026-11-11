@@ -10,8 +10,9 @@ using namespace std;
 const char PATH_CHAR='1';
 const char WALL_CHAR='0';
 const char ROOT_CHAR='A';
-const char GOAL_CHAR='B';
-
+const char TARGET_CHAR='B';
+pair<int,int> root_cords;
+pair<int,int> target_cords;
 
 vector<pair<int,int>> movements={
     {0,0},
@@ -54,6 +55,12 @@ class Node{
             }
             return antrs;
         }
+
+        vector<Node*>* preorder(){
+            
+
+
+        }
         void print(){
             cout<<"vaule "<<value.first<<" "<<value.second<<endl;
         }
@@ -64,7 +71,7 @@ vector<vector<char>>* loadMatrix(string file_path);
 
 inline int getNodeNumber(pair<int,int> cords, const int COLS);
 inline pair<int,int> getNodeCords( int num, const int COLS);
-pair<int,int> findRoot(vector<vector<char>>*matrix);
+pair<int,int> findNode(vector<vector<char>>*matrix,const char TARGET);
 int getNumOfPathChars(vector<vector<char>>*matrix);
 vector<pair<int,int>>* dfs(vector<vector<char>>*matrix);
 
@@ -73,7 +80,11 @@ unordered_map<int,Node*>* createTree(vector<vector<char>> *matrix);
 int main() {
 
     auto matrix= loadMatrix("laberinto_1.in");
+    root_cords=findNode(matrix,ROOT_CHAR);
+    target_cords=findNode(matrix,TARGET_CHAR);
     auto tree= createTree(matrix);
+
+
 
     for(auto n: *tree){
         n.second->print();
@@ -116,7 +127,7 @@ inline pair<int,int> getNodeCords( int num, const int COLS){
 
 
 
-pair<int,int> findRoot(vector<vector<char>>*matrix){
+pair<int,int> findNode(vector<vector<char>>*matrix,const char TARGET){
 
     const int ROWS=(*matrix).size();
     const int COLS=(*matrix)[0].size();
@@ -125,7 +136,7 @@ pair<int,int> findRoot(vector<vector<char>>*matrix){
     // so we can know where the root node is
     for(int i =0; i < ROWS;i++){
         for(int j =0;j<COLS;j++){   
-            if((*matrix)[i][j]==ROOT_CHAR){
+            if((*matrix)[i][j]==TARGET){
                 root={i,j}; 
                 break;
             }
@@ -153,7 +164,7 @@ int getNumOfPathChars(vector<vector<char>>*matrix){
 
 
 unordered_map<int,Node*>* createTree(vector<vector<char>> *matrix){
-    auto root = findRoot(matrix);
+    auto root = root_cords;
     const int COLS=(*matrix)[0].size();
     auto r=getNodeNumber(root,COLS);
     
@@ -179,7 +190,12 @@ unordered_map<int,Node*>* createTree(vector<vector<char>> *matrix){
                     child.first >= (*matrix).size()||
                     child.second >= (*matrix)[0].size()
                         )   continue;
-                bfs_q.push(child);
+                if((*matrix)[child.first][child.second]==PATH_CHAR
+                    ||(*matrix)[child.first][child.second]==TARGET_CHAR
+                        ){
+
+                    bfs_q.push(child);}
+
             }
             bfs_q.pop();
     }
