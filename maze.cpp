@@ -57,12 +57,20 @@ class Node{
         }
 
         vector<Node*>* preorder(){
-            
-
-
+            auto res= new vector<Node*>;
+            res->push_back(this);
+            for(auto child: children){
+                auto x=child->preorder();
+                for (auto m: *x){
+                    res->push_back(m);
+                }
+            }
+            return res; 
         }
+
+
         void print(){
-            cout<<"vaule "<<value.first<<" "<<value.second<<endl;
+            cout<<"vaule "<<value.first<<" "<<value.second<<" children "<<children.size()<<endl;
         }
 
 };
@@ -87,8 +95,11 @@ int main() {
 
 
     for(auto n: *tree){
-        n.second->print();
+        //n.second->print();
     }
+
+    auto pre=(*tree)[getNodeNumber(root_cords,(*matrix)[0].size())]->preorder();
+    for(auto n: *pre) n->print();
 
     
     
@@ -174,13 +185,13 @@ unordered_map<int,Node*>* createTree(vector<vector<char>> *matrix){
     queue<pair<int,int>> bfs_q;
     bfs_q.push(root);
     set<pair<int,int>>visited;
-    visited.insert(root);
-
-
+    visited.insert(root); 
+    vector<Node*>parents;
+    vector<Node*>children;
     while(bfs_q.size()){
             visited.insert(bfs_q.front());
-            tree->insert({getNodeNumber(bfs_q.front(),COLS),new Node(bfs_q.front())});       
-
+            //tree->insert({getNodeNumber(bfs_q.front(),COLS),new Node(bfs_q.front())});       
+            
             for(auto &n: movements){
                 pair<int,int> child={bfs_q.front().first + n.first,bfs_q.front().second+n.second};
                 if(visited.find(child)!=visited.end()) continue;
@@ -193,12 +204,18 @@ unordered_map<int,Node*>* createTree(vector<vector<char>> *matrix){
                 if((*matrix)[child.first][child.second]==PATH_CHAR
                     ||(*matrix)[child.first][child.second]==TARGET_CHAR
                         ){
-
+                    //parents.push_back((*tree)[getNodeNumber(bfs_q.front(),COLS)]);
+                    
+                    tree->insert({getNodeNumber(child,COLS),new Node(child)});
+                    (*tree)[getNodeNumber(bfs_q.front(),COLS)]->addChildren((*tree)[getNodeNumber(child,COLS)]);
+                    
                     bfs_q.push(child);}
 
             }
             bfs_q.pop();
     }
+
+
     return tree;
 }
 
