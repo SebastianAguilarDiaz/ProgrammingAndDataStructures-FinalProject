@@ -68,6 +68,17 @@ class Node{
             return res; 
         }
 
+        vector<Node*>* postorder(){
+            auto res=new vector<Node*>;
+            for(auto child:children){
+                auto x=child->preorder();
+                for(auto m:*x)
+                    res->push_back(m);
+            }
+            res->push_back(this);
+            return res;
+        }
+
 
         void print(){
             cout<<"vaule "<<value.first<<" "<<value.second<<" children "<<children.size()<<endl;
@@ -98,7 +109,7 @@ int main() {
         //n.second->print();
     }
 
-    auto pre=(*tree)[getNodeNumber(root_cords,(*matrix)[0].size())]->preorder();
+    auto pre=(*tree)[getNodeNumber(root_cords,(*matrix)[0].size())]->postorder();
     for(auto n: *pre) n->print();
 
     
