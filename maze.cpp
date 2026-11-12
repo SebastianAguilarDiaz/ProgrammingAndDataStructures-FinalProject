@@ -116,6 +116,8 @@ unordered_map<int,Node*>* createTreeDFS(vector<vector<char>>* matrix);
 string nodePath(vector<Node*>* path);
 void solveMaze (string file_path);
 void writeFile(string file_name,vector<Node*>* path);
+void writeFile(string file_name,vector<Node*>* path,string node);
+
 
 
 
@@ -168,14 +170,14 @@ void solveMaze (string file_path) {
     writeFile(file_name+"_postorder"+extension, post);
     
     auto ans_dfs=target_node_DFS->ancesters();
-    writeFile(file_name+"_dfs_solution"+extension, ans_dfs);
+    writeFile(file_name+"_dfs_solution"+extension, ans_dfs,target_node_DFS->getValue()+"\n");
     
     auto b=root_node_BFS->bfs();
     writeFile(file_name+"_bfs"+extension, b);
     
     
     auto ans_bfs=target_node_BFS->ancesters();
-    writeFile(file_name+"_bfs_solution"+extension, ans_bfs);
+    writeFile(file_name+"_bfs_solution"+extension, ans_bfs,target_node_BFS->getValue()+"\n");
 
     
 
@@ -199,6 +201,14 @@ void writeFile( string file_name,vector<Node*>* path){
     auto fout= ofstream(file_name);
 
     fout<<nodePath(path);
+    fout.close();
+    
+
+}
+void writeFile( string file_name,vector<Node*>* path,string node){
+    auto fout= ofstream(file_name);
+
+    fout<<node+nodePath(path);
     fout.close();
     
 
@@ -319,7 +329,8 @@ unordered_map<int,Node*>* createTreeDFS(vector<vector<char>>* matrix){
         visited.insert(current);
         dfs_st.pop();
 
-        for(int i=(movements.size()-1);i>=0;i--){
+        // for(int i=(movements.size()-1);i>=0;i--){
+        for(int i=0;i<movements.size();i++){
             pair<int,int> child={current.first+movements[i].first,current.second+movements[i].second };
             if(visited.find(child)!=visited.end()) continue;
             if(
