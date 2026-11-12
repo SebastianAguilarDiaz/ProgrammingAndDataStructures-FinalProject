@@ -15,10 +15,9 @@ pair<int,int> root_cords;
 pair<int,int> target_cords;
 
 vector<pair<int,int>> movements={
-    {0,0},
-    {-1,0},
-    {0,-1},
     {1,0},
+    {0,-1},
+    {-1,0},
     {0,1}
 };
 
@@ -70,18 +69,38 @@ class Node{
 
         vector<Node*>* postorder(){
             auto res=new vector<Node*>;
-            for(auto child:children){
-                auto x=child->preorder();
+            for(auto child:this->children){
+                auto x=child->postorder();
                 for(auto m:*x)
                     res->push_back(m);
             }
+            
             res->push_back(this);
             return res;
         }
 
+        vector<Node*>* bfs(){
+            auto res=new vector<Node*>;
+            queue<Node*> bfs_q;
+            bfs_q.push(this);
+
+            while(bfs_q.size()){
+                res->push_back(bfs_q.front());
+                for(auto n: bfs_q.front()->children){
+                    bfs_q.push(n);
+                }
+                bfs_q.pop();
+            }
+            return res;            
+
+        }
+
 
         void print(){
-            cout<<"vaule "<<value.first<<" "<<value.second<<" children "<<children.size()<<endl;
+            cout<<"("<<value.first<<", "<<value.second<<")";
+        }
+        string getValue(){
+            return "("+to_string(value.first)+", "+to_string(value.second)+")"; 
         }
 
 };
@@ -92,8 +111,6 @@ inline int getNodeNumber(pair<int,int> cords, const int COLS);
 inline pair<int,int> getNodeCords( int num, const int COLS);
 pair<int,int> findNode(vector<vector<char>>*matrix,const char TARGET);
 int getNumOfPathChars(vector<vector<char>>*matrix);
-vector<pair<int,int>>* dfs(vector<vector<char>>*matrix);
-
 unordered_map<int,Node*>* createTree(vector<vector<char>> *matrix);
 
 int main() {
@@ -101,22 +118,52 @@ int main() {
     auto matrix= loadMatrix("laberinto_1.in");
     root_cords=findNode(matrix,ROOT_CHAR);
     target_cords=findNode(matrix,TARGET_CHAR);
+    
+    
+    
     auto tree= createTree(matrix);
+    int cols=(*matrix)[0].size();
 
 
+    int root_num=getNodeNumber(root_cords,cols);
+    auto root_node=(*tree)[root_num];
+    
+    
+    int target_num=getNodeNumber(target_cords,cols);
+    auto target_node=(*tree)[target_num];
+    
 
-    for(auto n: *tree){
-        //n.second->print();
+
+    // for(auto n: *tree){
+    //     n.second->print();
+    // }
+
+    
+    auto pre=root_node->preorder();
+    
+    for(auto n: *pre) {n->print();cout<<", ";}
+    cout<<endl;
+    
+    cout<<endl;
+    auto post=root_node->postorder();
+    
+    for(auto n: *post) {n->print();cout<<", ";}
+    cout<<endl;
+    cout<<endl;
+    auto b=root_node->bfs();
+    
+    for(auto n: *b) {n->print();cout<<", ";}
+    cout<<endl;
+    cout<<endl;
+
+    auto ans=target_node->ancesters();
+    target_node->print();
+    cout<<", ";
+    for(auto n: *ans){
+        n->print();
+        cout<<", ";
     }
-
-    auto pre=(*tree)[getNodeNumber(root_cords,(*matrix)[0].size())]->postorder();
-    for(auto n: *pre) n->print();
-
-    
-    
-
-
-
+    cout<<endl;
 
 }
 
