@@ -111,17 +111,47 @@ inline int getNodeNumber(pair<int,int> cords, const int COLS);
 inline pair<int,int> getNodeCords( int num, const int COLS);
 pair<int,int> findNode(vector<vector<char>>*matrix,const char TARGET);
 int getNumOfPathChars(vector<vector<char>>*matrix);
-unordered_map<int,Node*>* createTree(vector<vector<char>> *matrix);
+unordered_map<int,Node*>* createTreeBFS(vector<vector<char>> *matrix);
+string nodePath(vector<Node*>* path);
+void solveMaze (string file_path);
 
-int main() {
 
-    auto matrix= loadMatrix("laberinto_1.in");
+
+
+int main(){
+    
+
+
+
+
+}
+
+
+
+
+
+
+
+string nodePath(vector<Node*>* path){
+    string x="";
+    for(auto n:*path){
+        x += n->getValue()+", ";
+    }
+    x+="\n";
+}
+
+
+void solveMaze (string file_path) {
+    string file_name=file_path.substr(0,file_path.size()-3);
+
+
+    auto matrix= loadMatrix(file_path);
     root_cords=findNode(matrix,ROOT_CHAR);
     target_cords=findNode(matrix,TARGET_CHAR);
     
     
     
-    auto tree= createTree(matrix);
+    auto tree= createTreeBFS(matrix);
     int cols=(*matrix)[0].size();
 
 
@@ -232,7 +262,7 @@ int getNumOfPathChars(vector<vector<char>>*matrix){
 
 
 
-unordered_map<int,Node*>* createTree(vector<vector<char>> *matrix){
+unordered_map<int,Node*>* createTreeBFS(vector<vector<char>> *matrix){
     auto root = root_cords;
     const int COLS=(*matrix)[0].size();
     auto r=getNodeNumber(root,COLS);
