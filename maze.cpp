@@ -33,6 +33,7 @@ class Node{
             value=v;
         }
 
+
         Node* addChildren(Node* c){
             this->children.push_back(c);
             c->parent=this;
@@ -124,6 +125,9 @@ void writeFile(string file_name,vector<Node*>* path,string node);
 int main(){
     
     solveMaze("laberinto_1.in");
+    solveMaze("laberinto_2.in");
+    solveMaze("laberinto_3.in");
+    solveMaze("laberinto_4.in");
 
 
 
@@ -271,7 +275,12 @@ int getNumOfPathChars(vector<vector<char>>*matrix){
 
 
 
+void freeTreeMemory(unordered_map<int,Node*>* tree){
+    for (auto &n: *tree){
+        delete n.second;
+    }
 
+}
 
 unordered_map<int,Node*>* createTreeBFS(vector<vector<char>> *matrix){
     auto root = root_cords;
