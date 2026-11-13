@@ -5,6 +5,7 @@
 #include<set>
 #include<stack>
 #include<queue>
+#include<unordered_set>
 
 using namespace std;
 const char PATH_CHAR='1';
@@ -50,7 +51,7 @@ class Node{
             auto p=this->parent;
             auto antrs= new vector<Node*>;
             while(p!=nullptr){
-                    antrs->push_back(p);
+                antrs->push_back(p);
                 p=p->parent;
             }
             return antrs;
@@ -118,16 +119,21 @@ string nodePath(vector<Node*>* path);
 void solveMaze (string file_path);
 void writeFile(string file_name,vector<Node*>* path);
 void writeFile(string file_name,vector<Node*>* path,string node);
-
+void freeTreeMemory(unordered_map<int,Node*>* tree);
 
 
 
 int main(){
-    
+    // ios_base::sync_with_stdio(false);
+    // cin.tie(nullptr);
     solveMaze("laberinto_1.in");
     solveMaze("laberinto_2.in");
     solveMaze("laberinto_3.in");
-    solveMaze("laberinto_4.in");
+
+    // more characters than declared in the file:
+    // solveMaze("laberinto_4.in");
+    // solveMaze("laberinto_5.in");
+    // solveMaze("laberinto_6.in");
 
 
 
@@ -146,16 +152,21 @@ void solveMaze (string file_path) {
     string file_name=file_path.substr(0,file_path.size()-3);
     string extension=".sol";
 
+    cout<<endl<<file_name<<endl;
     auto matrix= loadMatrix(file_path);
+
     root_cords=findNode(matrix,ROOT_CHAR);
     target_cords=findNode(matrix,TARGET_CHAR);
     int cols=(*matrix)[0].size();
     
-    auto treeBFS= createTreeBFS(matrix);
     
     auto treeDFS= createTreeDFS(matrix);
+    // cout<<"Dfs tree created "<<(*treeDFS).size()<<" nodes"<<endl;
     
-
+    auto treeBFS= createTreeBFS(matrix);
+    // cout<<"Bfs tree created "<<(*treeBFS).size()<<" nodes"<<endl;
+    
+    
     int root_num=getNodeNumber(root_cords,cols);
     auto root_node_BFS=(*treeBFS)[root_num];
     auto root_node_DFS=(*treeDFS)[root_num];
@@ -166,23 +177,28 @@ void solveMaze (string file_path) {
     
     
 
-
     auto pre=root_node_DFS->preorder();
     writeFile(file_name+"_preorder"+extension, pre);
     
     auto post=root_node_DFS->postorder();
     writeFile(file_name+"_postorder"+extension, post);
     
+    
     auto ans_dfs=target_node_DFS->ancesters();
     writeFile(file_name+"_dfs_solution"+extension, ans_dfs,target_node_DFS->getValue()+"\n");
+
     
     auto b=root_node_BFS->bfs();
     writeFile(file_name+"_bfs"+extension, b);
+
     
     
     auto ans_bfs=target_node_BFS->ancesters();
     writeFile(file_name+"_bfs_solution"+extension, ans_bfs,target_node_BFS->getValue()+"\n");
 
+
+    freeTreeMemory(treeBFS);
+    freeTreeMemory(treeDFS);
     
 
 }
@@ -191,7 +207,8 @@ void solveMaze (string file_path) {
 vector<vector<char>> *loadMatrix(string file_path){
     ifstream fin(file_path);
     int rows, cols;
-    fin>>rows>>cols;
+    fin>>rows;
+    fin>>cols;
     auto m= new vector<vector<char> >(rows,vector<char>(cols));
     for(auto &i: *m){
         for(auto &j:i){
@@ -206,14 +223,15 @@ void writeFile( string file_name,vector<Node*>* path){
 
     fout<<nodePath(path);
     fout.close();
+    cout<<file_name<<" created\n";
     
-
 }
 void writeFile( string file_name,vector<Node*>* path,string node){
     auto fout= ofstream(file_name);
-
+    
     fout<<node+nodePath(path);
     fout.close();
+    cout<<file_name<<" created\n";
     
 
 }
@@ -252,7 +270,7 @@ pair<int,int> findNode(vector<vector<char>>*matrix,const char TARGET){
         for(int j =0;j<COLS;j++){   
             if((*matrix)[i][j]==TARGET){
                 root={i,j}; 
-                break;
+                return root;
             }
         }
     }
@@ -292,29 +310,33 @@ unordered_map<int,Node*>* createTreeBFS(vector<vector<char>> *matrix){
 
     queue<pair<int,int>> bfs_q;
     bfs_q.push(root);
-    set<pair<int,int>>visited;
-    visited.insert(root); 
+    unordered_set<int>visited;
+    visited.insert(r); 
     vector<Node*>parents;
+    parents.reserve((*matrix).size()*COLS);
     vector<Node*>children;
+    children.reserve((*matrix).size()*COLS);
+    
     while(bfs_q.size()){
-            visited.insert(bfs_q.front());
-            
-            
-            for(auto &n: movements){
-                pair<int,int> child={bfs_q.front().first + n.first,bfs_q.front().second+n.second};
-                if(visited.find(child)!=visited.end()) continue;
-                if(
-                    child.first <0||
-                    child.second <0||
-                    child.first >= (*matrix).size()||
-                    child.second >= (*matrix)[0].size()
-                        )   continue;
+        
+        
+        for(auto &n: movements){
+            pair<int,int> child={bfs_q.front().first + n.first,bfs_q.front().second+n.second};
+            if(
+                child.first <0||
+                child.second <0||
+                child.first >= (*matrix).size()||
+                child.second >= (*matrix)[0].size()
+            )   continue;
+            if(visited.find(getNodeNumber(child,COLS))!=visited.end()) continue;
+                visited.insert(getNodeNumber(child,COLS));
                 if((*matrix)[child.first][child.second]==PATH_CHAR
                     ||(*matrix)[child.first][child.second]==TARGET_CHAR
                         ){
                     tree->insert({getNodeNumber(child,COLS),new Node(child)});
                     (*tree)[getNodeNumber(bfs_q.front(),COLS)]->addChildren((*tree)[getNodeNumber(child,COLS)]);
                     bfs_q.push(child);
+                    // cout<<"BFS tree with "<<(*tree).size()<<" current nodes.\n";
                 }
             }
             bfs_q.pop();
