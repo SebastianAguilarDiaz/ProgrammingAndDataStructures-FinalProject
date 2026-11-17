@@ -127,7 +127,7 @@ int main(int argc, char* argv[]){
     // ios_base::sync_with_stdio(false);
     // cin.tie(nullptr);
     
-    if(argc!=2) cout<<"Cantidad de argumentos incorrecta"<<endl;
+    if(argc!=2) cout<<"Wrong amount of arguments"<<endl;
     else{
     solveMaze(argv[1]);
     }
