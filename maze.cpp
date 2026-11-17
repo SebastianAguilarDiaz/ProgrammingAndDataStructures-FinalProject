@@ -159,6 +159,8 @@ void solveMaze (string file_path) {
 
     root_cords=findNode(matrix,ROOT_CHAR);
     target_cords=findNode(matrix,TARGET_CHAR);
+    pair<int,int> invalid_cords={-1,-1};
+    if (target_cords == invalid_cords || root_cords == invalid_cords) {cout<<"Target or root not found."<<endl; return; }
     int cols=(*matrix)[0].size();
     
     
@@ -185,18 +187,23 @@ void solveMaze (string file_path) {
     auto post=root_node_DFS->postorder();
     writeFile(file_name+"_postorder"+extension, post);
     
+    if((*treeDFS).find(target_num)==(*treeDFS).end()) cout<<"There's no dfs solution"<<endl;
+    else{
+        auto ans_dfs=target_node_DFS->ancesters();
+        writeFile(file_name+"_dfs_solution"+extension, ans_dfs,target_node_DFS->getValue()+"\n");
+    }
     
-    auto ans_dfs=target_node_DFS->ancesters();
-    writeFile(file_name+"_dfs_solution"+extension, ans_dfs,target_node_DFS->getValue()+"\n");
-
     
     auto b=root_node_BFS->bfs();
     writeFile(file_name+"_bfs"+extension, b);
-
     
     
-    auto ans_bfs=target_node_BFS->ancesters();
-    writeFile(file_name+"_bfs_solution"+extension, ans_bfs,target_node_BFS->getValue()+"\n");
+    
+    if((*treeBFS).find(target_num)==(*treeBFS).end()) cout<<"There's no bfs solution"<<endl;
+    else {
+        auto ans_bfs=target_node_BFS->ancesters();
+        writeFile(file_name+"_bfs_solution"+extension, ans_bfs,target_node_BFS->getValue()+"\n");
+    }
 
 
     freeTreeMemory(treeBFS);
