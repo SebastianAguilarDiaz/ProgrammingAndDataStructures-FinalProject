@@ -123,12 +123,14 @@ void freeTreeMemory(unordered_map<int,Node*>* tree);
 
 
 
-int main(){
+int main(int argc, char* argv[]){
     // ios_base::sync_with_stdio(false);
     // cin.tie(nullptr);
-    solveMaze("laberinto_1.in");
-    solveMaze("laberinto_2.in");
-    solveMaze("laberinto_3.in");
+    
+    if(argc!=2) cout<<"Cantidad de argumentos incorrecta"<<endl;
+    else{
+    solveMaze(argv[1]);
+    }
 
     // more characters than declared in the file:
     // solveMaze("laberinto_4.in");
