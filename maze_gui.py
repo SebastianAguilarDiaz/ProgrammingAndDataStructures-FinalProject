@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""MazeView: visualizador gráfico de los laberintos y recorridos de a.exe.
+"""Maze: visualizador gráfico de los laberintos y recorridos de a.exe.
 
 Uso:
     python maze_gui.py [laberinto.in]
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ctypes
 import glob
+import math
 import os
 import random
 import shutil
@@ -21,10 +22,11 @@ import sys
 import tempfile
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
 
-APP_NAME = "MazeView"
-APP_SUBTITLE = "Misión espacial · la nave debe alcanzar su planeta"
+APP_NAME = "Maze"
+APP_SUBTITLE = "El granjero, su guadaña y el camino al granero"
 PAD = 24
 TICK_MS = 40
 SOLVER_TIMEOUT = 120
@@ -32,11 +34,11 @@ SPEED_VALUES = [1, 2, 5, 10, 25, 50, 100, 250, 1000]
 
 # (clave del archivo .sol, etiqueta, grupo, descripción)
 KINDS = [
-    ("preorder", "Preorden", "tree", "Barrido DFS del sector desde la nave A."),
-    ("postorder", "Postorden", "tree", "Barrido DFS: zonas internas antes que la nave."),
+    ("preorder", "Preorden", "tree", "Recorrido DFS del campo desde el granjero A."),
+    ("postorder", "Postorden", "tree", "Cosecha DFS: zonas internas antes que el granjero."),
     ("bfs", "BFS por niveles", "tree", "Exploración BFS: anillos de distancia desde A."),
-    ("dfs_solution", "Solución DFS", "path", "Trayectoria planeta B → nave A con el árbol DFS."),
-    ("bfs_solution", "Solución BFS", "path", "Trayectoria planeta B → nave A con el árbol BFS."),
+    ("dfs_solution", "Ruta DFS", "path", "Camino del granjero A hasta el granero B con el árbol DFS."),
+    ("bfs_solution", "Ruta BFS", "path", "Camino del granjero A hasta el granero B con el árbol BFS."),
 ]
 KIND_LABEL = {key: label for key, label, _, _ in KINDS}
 KIND_DESC = {key: desc for key, _, _, desc in KINDS}
@@ -235,112 +237,307 @@ def _build_gradient(stops, count=128):
     return result
 
 
-class KindRow(tk.Frame):
-    """Fila seleccionable con un punto de color para elegir recorrido."""
+def _rounded_points(x1, y1, x2, y2, radius):
+    radius = max(0, min(radius, (x2 - x1) / 2, (y2 - y1) / 2))
+    return [
+        x1 + radius, y1,
+        x2 - radius, y1, x2, y1, x2, y1 + radius,
+        x2, y2 - radius, x2, y2, x2 - radius, y2,
+        x1 + radius, y2, x1, y2, x1, y2 - radius,
+        x1, y1 + radius, x1, y1,
+    ]
+
+
+class RoundedButton(tk.Canvas):
+    """Botón de texto con esquinas redondeadas, sin dependencias externas."""
+
+    def __init__(self, master, text, command=None, palette=None, kind="secondary",
+                 small=False, width=None, **kwargs):
+        self.palette = palette or {}
+        self._kind = kind
+        self._text = str(text)
+        self._command = command
+        self._enabled = True
+        self._hover = False
+        self._selected = False
+        self._small = small
+        self._padx = 10 if small else 14
+        self._font = self.palette.get("font_button_small" if small else "font_button")
+        self._parent_bg = master.cget("bg") if "bg" in master.keys() else self.palette.get("bg", "#ffffff")
+        try:
+            measured = tkfont.Font(font=self._font).measure(self._text)
+        except tk.TclError:
+            measured = len(self._text) * 7
+        wanted_w = max(measured + 2 * self._padx, 30)
+        if width:
+            wanted_w = max(wanted_w, int(width) * 8 + 14)
+        wanted_h = 28 if small else 34
+        super().__init__(
+            master, width=wanted_w, height=wanted_h, bg=self._parent_bg,
+            highlightthickness=0, bd=0, cursor="hand2", takefocus=True,
+        )
+        self.bind("<Configure>", lambda _e: self._draw())
+        self.bind("<Button-1>", self._on_press)
+        self.bind("<ButtonRelease-1>", self._on_release)
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Return>", self._on_activate)
+        self.bind("<space>", self._on_activate)
+        self._draw()
+
+    def _colors(self):
+        p = self.palette
+        if not self._enabled:
+            return p.get("card_alt", "#ece6d7"), p.get("disabled", "#aaa494"), p.get("border", "#d8cbb2")
+        primary = self._kind == "primary" or self._selected
+        if primary:
+            return p.get("accent", "#6e8f57"), "#fffdf6", p.get("accent", "#6e8f57")
+        if self._kind == "ghost":
+            return self._parent_bg, p.get("accent_dark", "#4f6b3f"), ""
+        bg = p.get("card_hover" if self._hover else "card_alt", "#f1e9d8")
+        return bg, p.get("text", "#33402c"), p.get("border", "#d8cbb2")
+
+    def _draw(self):
+        self.delete("all")
+        w = max(self.winfo_width(), int(self.cget("width")), 20)
+        h = max(self.winfo_height(), int(self.cget("height")), 18)
+        bg, fg, border = self._colors()
+        radius = 10 if self._small else 13
+        if border and not self._selected and self._kind != "primary":
+            self.create_polygon(
+                *_rounded_points(1, 2, w - 1, h, radius - 1),
+                smooth=True, splinesteps=18,
+                fill=self.palette.get("shadow", "#e3d9c5"), outline="",
+            )
+        self.create_polygon(
+            *_rounded_points(1, 1, w - 1, h - 2, radius),
+            smooth=True, splinesteps=20, fill=bg, outline=border,
+        )
+        self.create_text(w / 2, h / 2 - 1, text=self._text, fill=fg, font=self._font)
+
+    def _on_press(self, event):
+        if not self._enabled:
+            return
+        self._pressed = True
+        self.focus_set()
+        x1, y1, x2, y2 = self.bbox("all") or (0, 0, 0, 0)
+        if not (x1 <= event.x <= x2 and y1 <= event.y <= y2):
+            self._pressed = False
+
+    def _on_release(self, _event):
+        if self._enabled and getattr(self, "_pressed", False):
+            self._pressed = False
+            if self._command:
+                self._command()
+
+    def _on_enter(self, _event):
+        self._hover = True
+        if self._enabled:
+            self.configure(cursor="hand2")
+            self._draw()
+
+    def _on_leave(self, _event):
+        self._hover = False
+        self._pressed = False
+        self._draw()
+
+    def _on_activate(self, _event=None):
+        if self._enabled and self._command:
+            self._command()
+        return "break"
+
+    def set_text(self, text):
+        self._text = str(text)
+        self._draw()
+
+    def set_enabled(self, enabled):
+        self._enabled = bool(enabled)
+        self.configure(cursor="hand2" if enabled else "arrow")
+        self._draw()
+
+    def set_selected(self, selected):
+        self._selected = bool(selected)
+        self._draw()
+
+    def configure(self, cnf=None, **kwargs):
+        if "text" in kwargs:
+            self._text = str(kwargs.pop("text"))
+        if "state" in kwargs:
+            self._enabled = str(kwargs.pop("state")) != "disabled"
+        for ignored in ("bg", "fg", "activebackground", "activeforeground",
+                        "highlightbackground", "highlightcolor", "relief"):
+            kwargs.pop(ignored, None)
+        result = super().configure(cnf, **kwargs)
+        if cnf is None:
+            self._draw()
+        return result
+
+    config = configure
+
+
+class RoundedCard(tk.Canvas):
+    """Tarjeta clara con borde redondeado y un marco interior para el contenido."""
+
+    def __init__(self, master, palette, radius=16, pad=14, **kwargs):
+        self.palette = palette
+        self._card_bg = palette.get("card", "#fffdf6")
+        self._border = palette.get("border", "#d8cbb2")
+        self._radius = radius
+        self._pad = pad
+        parent_bg = master.cget("bg") if "bg" in master.keys() else palette.get("bg", "#f3eedf")
+        super().__init__(master, bg=parent_bg, highlightthickness=0, bd=0, height=1, **kwargs)
+        self.inner = tk.Frame(self, bg=self._card_bg)
+        self._window = self.create_window(self._pad, self._pad, anchor="nw", window=self.inner)
+        self.bind("<Configure>", self._on_configure)
+        self.inner.bind("<Configure>", self._on_inner)
+
+    def _on_configure(self, event):
+        self.delete("cardbg")
+        w, h = max(event.width, 2), max(event.height, 2)
+        self.create_polygon(
+            *_rounded_points(1, 2, w - 1, h, self._radius),
+            smooth=True, splinesteps=20,
+            fill=self.palette.get("shadow", "#e3d9c5"), outline="",
+            tags="cardbg",
+        )
+        self.create_polygon(
+            *_rounded_points(1, 1, w - 1, h - 2, self._radius),
+            smooth=True, splinesteps=20,
+            fill=self._card_bg, outline=self._border,
+            tags="cardbg",
+        )
+        self.tag_lower("cardbg")
+        self._sync_size(w)
+
+    def _on_inner(self, _event):
+        self._sync_size()
+
+    def _sync_size(self, width=None):
+        if width is None:
+            width = max(1, self.winfo_width())
+        inner_h = max(1, self.inner.winfo_reqheight())
+        self.itemconfigure(
+            self._window,
+            width=max(1, width - 2 * self._pad),
+            height=inner_h,
+        )
+        target = inner_h + 2 * self._pad
+        if abs(int(self.cget("height")) - target) > 1:
+            self.configure(height=target)
+
+
+class KindRow(tk.Canvas):
+    """Fila seleccionable redondeada con un punto de color."""
 
     def __init__(self, master, kind, text, palette, on_click):
         super().__init__(
-            master,
-            bg=palette["card_alt"],
-            bd=0,
-            padx=9,
-            pady=3,
-            highlightthickness=1,
-            highlightbackground=palette["border"],
-            cursor="hand2",
+            master, height=31, bg=palette["card"],
+            highlightthickness=0, bd=0, cursor="hand2",
         )
         self.kind = kind
+        self.text = text
         self.palette = palette
         self.on_click = on_click
         self.enabled = False
         self.selected = False
-
-        self.dot = tk.Canvas(
-            self, width=14, height=14, bg=palette["card_alt"], highlightthickness=0, bd=0
-        )
-        self.dot.pack(side="left", padx=(0, 8))
-        self.dot_id = self.dot.create_oval(3, 3, 11, 11, fill=palette["border"], outline="")
-
-        self.label = tk.Label(
-            self,
-            text=text,
-            bg=palette["card_alt"],
-            fg=palette["text"],
-            anchor="w",
-            font=palette["font_row"],
-            cursor="hand2",
-        )
-        self.label.pack(side="left", fill="x", expand=True)
-
-        for widget in (self, self.dot, self.label):
-            widget.bind("<Button-1>", self._click)
-            widget.bind("<Enter>", self._enter)
-            widget.bind("<Leave>", self._leave)
+        self.hover = False
+        self.bind("<Configure>", lambda _e: self._paint())
+        self.bind("<Button-1>", self._click)
+        self.bind("<Enter>", self._enter)
+        self.bind("<Leave>", self._leave)
 
     def _click(self, _event=None):
         if self.enabled and self.on_click:
             self.on_click(self.kind)
 
     def _enter(self, _event=None):
-        if self.enabled and not self.selected:
-            self._paint(hover=True)
-
-    def _leave(self, _event=None):
+        self.hover = True
         self._paint()
 
-    def _paint(self, hover=False):
+    def _leave(self, _event=None):
+        self.hover = False
+        self._paint()
+
+    def _paint(self):
+        self.delete("all")
         p = self.palette
-        bg = p["card_sel"] if self.selected else (p["card_hover"] if hover else p["card_alt"])
-        border = p["accent"] if self.selected else p["border"]
-        fg = p["text"] if self.enabled else p["disabled"]
-        dot = p["accent"] if self.selected else (p["muted"] if self.enabled else p["disabled"])
-        self.configure(bg=bg, highlightbackground=border)
-        self.dot.configure(bg=bg)
-        self.dot.itemconfigure(self.dot_id, fill=dot)
-        self.label.configure(bg=bg, fg=fg)
+        w = max(self.winfo_width(), 200)
+        h = max(self.winfo_height(), 28)
+        if self.selected:
+            bg, border, dot, fg = p["card_sel"], p["accent"], p["accent"], p["text"]
+        elif self.hover and self.enabled:
+            bg, border, dot, fg = p["card_hover"], p["border"], p["muted"], p["text"]
+        else:
+            bg, border, dot, fg = p["card_alt"], p["border"], p["muted"], p["text"]
+        if not self.enabled:
+            fg, dot = p["disabled"], p["disabled"]
+        self.create_polygon(
+            *_rounded_points(2, 2, w - 3, h - 2, 12),
+            smooth=True, splinesteps=18, fill=bg, outline=border,
+        )
+        self.create_oval(12, h / 2 - 4, 20, h / 2 + 4, fill=dot, outline="")
+        self.create_text(29, h / 2, text=self.text, anchor="w", fill=fg, font=p["font_row"])
 
     def render(self, selected, enabled):
         self.selected = selected
         self.enabled = enabled
         self.configure(cursor="hand2" if enabled else "arrow")
-        self.label.configure(cursor="hand2" if enabled else "arrow")
         self._paint()
 
 
 class MazeGui:
-    BG = "#0b111b"
-    PANEL = "#101927"
-    CARD = "#141f2e"
-    CARD_ALT = "#1a2839"
-    CARD_HOVER = "#223447"
-    CARD_SEL = "#203842"
-    BORDER = "#2b4051"
-    TEXT = "#e6edf4"
-    MUTED = "#95a7b9"
-    DISABLED = "#56687a"
-    ACCENT = "#8fc2cc"
-    ACCENT_DARK = "#4c7884"
-    WARN = "#d8b47a"
-    DANGER = "#c9828d"
-    CANVAS_BG = "#070c14"
-    WALL = "#26384a"
-    WALL_SIDE_LIGHT = "#1a2836"
-    WALL_SIDE_DARK = "#111c27"
-    FLOOR = "#466a78"
-    ROOT_COLOR = "#8fbfa8"
-    TARGET_COLOR = "#c08b9a"
-    UNKNOWN = "#4b4f5e"
-    GRID = "#223846"
-    CURRENT = "#d9c7a0"
-    TRAIL = "#cfa77f"
+    BG = "#f3eedf"
+    PANEL = "#fbf7ea"
+    CARD = "#fffdf6"
+    CARD_ALT = "#f1e9d8"
+    CARD_HOVER = "#e7ddc8"
+    CARD_SEL = "#dde8cf"
+    BORDER = "#d8cbb2"
+    SHADOW = "#e3d9c5"
+    TEXT = "#33402c"
+    MUTED = "#7b876d"
+    DISABLED = "#b6b09e"
+    ACCENT = "#6e8f57"
+    ACCENT_DARK = "#4f6b3f"
+    WARN = "#b7792f"
+    DANGER = "#b45b4b"
+    CANVAS_BG = "#efe7d4"
+    WALL = "#8d897b"
+    WALL_LIGHT = "#9a9688"
+    WALL_MOSS = "#7e8f63"
+    WALL_SIDE_LIGHT = "#726e61"
+    WALL_SIDE_DARK = "#5a574d"
+    FLOOR = "#6e9a4a"
+    GRASS_LIGHT = "#83ad58"
+    GRASS_DARK = "#5c8740"
+    CUT_GRASS = "#d6c58c"
+    STUBBLE = "#a89a61"
+    ROOT_COLOR = "#c9b48a"
+    TARGET_COLOR = "#b98a6a"
+    UNKNOWN = "#8b8578"
+    GRID = "#c7b99b"
+    CURRENT = "#d9b86c"
+    TRAIL = "#dccb93"
+    BARN_BODY = "#a94f3c"
+    BARN_ROOF = "#704235"
+    BARN_TRIM = "#efe4c8"
+    BARN_DARK = "#4e342a"
+    HAT = "#d9b86c"
+    SHIRT = "#6f89a0"
+    SKIN = "#d8a87b"
+    SKY_TOP = "#dcebf0"
+    SKY_BOTTOM = "#f6efd8"
+    HILL_FAR = "#b9c7a8"
+    HILL_NEAR = "#9db18a"
+    FIELD_STRIPE = "#e7ddc0"
+    SUN_COLOR = "#f2d98a"
+    CLOUD = "#fbf7ea"
     GRADIENT_STOPS = (
-        (0.00, (92, 150, 164)),
-        (0.35, (104, 138, 174)),
-        (0.68, (133, 132, 174)),
-        (1.00, (158, 128, 152)),
+        (0.00, (150, 180, 98)),
+        (0.42, (193, 197, 116)),
+        (0.74, (218, 202, 134)),
+        (1.00, (232, 214, 155)),
     )
-    STAR_COLORS = ("#dfe9f4", "#c3d7ea", "#e3d8c5", "#c8c4db")
-    NEBULA_COLORS = ("#0d1521", "#0f1725", "#101a28", "#0b151e")
 
     def __init__(self, root, initial_file=None):
         self.root = root
@@ -356,6 +553,11 @@ class MazeGui:
         self.playing = False
         self.after_id = None
         self.running = False
+        self.view_mode = "iso"
+        self.view_states = {
+            "iso": {"zoom": 1.0, "auto_fit": True, "base_cell": 4.0, "xview": 0.0, "yview": 0.0},
+            "top": {"zoom": 1.0, "auto_fit": True, "base_cell": 4.0, "xview": 0.0, "yview": 0.0},
+        }
         self.auto_fit = True
         self.zoom = 1.0
         self.base_cell = 4.0
@@ -365,14 +567,22 @@ class MazeGui:
         self.cell_items = []
         self.marker_items = []
         self.trail_items = []
+        self.grass_items = {}
+        self.cut_counts = {}
+        self._cut_prefix = {}
+        self._cut_total = 0
+        self._grass_budget = 6000
+        self._farmer_xy = None
+        self._walk_job = None
+        self._walk_token = 0
+        self._swing_job = None
+        self._clip_jobs = []
         self.solver_issues = []
         self.log = ""
         self.temp_dirs = []
         self._resize_job = None
         self._updating_list = False
         self._step_accum = 0
-        self.star_items = []
-        self._star_job = None
 
         self.gradient = _build_gradient(self.GRADIENT_STOPS)
 
@@ -383,11 +593,11 @@ class MazeGui:
         self._bind_events()
         self._set_controls_enabled(False)
         self._update_kind_rows()
+        self._update_view_buttons()
         self._populate_order_list()
         self._update_progress()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-        self._star_job = self.root.after(700, self._twinkle_stars)
         if initial_file:
             self.root.after(150, lambda: self.load_path(initial_file))
         else:
@@ -395,7 +605,8 @@ class MazeGui:
 
     def _setup_fonts(self):
         family = "Segoe UI" if os.name == "nt" else "Helvetica"
-        self.font_title = (family, 18, "bold")
+        title_family = "Georgia" if os.name == "nt" else "DejaVu Serif"
+        self.font_title = (title_family, 22, "bold")
         self.font_subtitle = (family, 9)
         self.font_body = (family, 10)
         self.font_small = (family, 9)
@@ -404,19 +615,27 @@ class MazeGui:
         self.font_button = (family, 9, "bold")
         self.font_button_small = (family, 8, "bold")
         self.font_value = (family, 9, "bold")
-        self.font_placeholder = (family, 13)
+        self.font_placeholder = (title_family, 14, "bold")
         self.font_mono = ("Consolas", 9) if os.name == "nt" else ("DejaVu Sans Mono", 9)
 
         self.palette = {
+            "card": self.CARD,
             "card_alt": self.CARD_ALT,
             "card_hover": self.CARD_HOVER,
             "card_sel": self.CARD_SEL,
             "border": self.BORDER,
+            "shadow": self.SHADOW,
             "text": self.TEXT,
             "muted": self.MUTED,
             "disabled": self.DISABLED,
             "accent": self.ACCENT,
+            "accent_dark": self.ACCENT_DARK,
+            "bg": self.BG,
+            "panel": self.PANEL,
             "font_row": self.font_row,
+            "font_button": self.font_button,
+            "font_button_small": self.font_button_small,
+            "font_card": self.font_card,
         }
 
     def _setup_root(self):
@@ -443,28 +662,31 @@ class MazeGui:
             foreground=self.TEXT,
             fieldbackground=self.CARD_ALT,
             bordercolor=self.BORDER,
-            lightcolor=self.BORDER,
+            lightcolor=self.CARD,
             darkcolor=self.BORDER,
-            troughcolor=self.CANVAS_BG,
+            troughcolor=self.CARD_ALT,
             focuscolor=self.ACCENT,
             font=self.font_body,
         )
         style.configure(
             "Dark.TCombobox",
-            fieldbackground=self.CARD_ALT,
-            background=self.CARD_ALT,
+            fieldbackground=self.CARD,
+            background=self.CARD,
             foreground=self.TEXT,
-            arrowcolor=self.ACCENT,
+            arrowcolor=self.ACCENT_DARK,
             bordercolor=self.BORDER,
+            lightcolor=self.CARD,
+            darkcolor=self.CARD,
             padding=4,
         )
         style.map(
             "Dark.TCombobox",
-            fieldbackground=[("readonly", self.CARD_ALT)],
+            fieldbackground=[("readonly", self.CARD)],
             foreground=[("readonly", self.TEXT)],
-            selectbackground=[("readonly", self.CARD_ALT)],
+            selectbackground=[("readonly", self.CARD)],
             selectforeground=[("readonly", self.TEXT)],
             bordercolor=[("focus", self.ACCENT)],
+            arrowcolor=[("active", self.ACCENT_DARK)],
         )
         style.configure(
             "Vertical.TScrollbar",
@@ -487,7 +709,7 @@ class MazeGui:
         style.configure(
             "Accent.Horizontal.TProgressbar",
             background=self.ACCENT,
-            troughcolor=self.CANVAS_BG,
+            troughcolor=self.CARD_ALT,
             bordercolor=self.BORDER,
             lightcolor=self.ACCENT,
             darkcolor=self.ACCENT_DARK,
@@ -495,83 +717,46 @@ class MazeGui:
         style.configure(
             "Accent.Horizontal.TScale",
             background=self.CARD,
-            troughcolor=self.CANVAS_BG,
+            troughcolor=self.CARD_ALT,
             bordercolor=self.BORDER,
             lightcolor=self.ACCENT,
-            darkcolor=self.ACCENT,
+            darkcolor=self.ACCENT_DARK,
         )
-        self.root.option_add("*TCombobox*Listbox.background", self.CARD_ALT)
+        self.root.option_add("*TCombobox*Listbox.background", self.CARD)
         self.root.option_add("*TCombobox*Listbox.foreground", self.TEXT)
-        self.root.option_add("*TCombobox*Listbox.selectBackground", self.ACCENT_DARK)
-        self.root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+        self.root.option_add("*TCombobox*Listbox.selectBackground", self.ACCENT)
+        self.root.option_add("*TCombobox*Listbox.selectForeground", "#fffdf6")
 
     # ------------------------------------------------------------------ UI --
     def _flat_button(self, parent, text, command, kind="secondary", small=False, **kwargs):
-        if kind == "primary":
-            bg, fg, hover = self.ACCENT, "#102026", "#a9d6df"
-        else:
-            bg, fg, hover = self.CARD_ALT, self.TEXT, self.CARD_HOVER
-        button = tk.Button(
-            parent,
-            text=text,
-            command=command,
-            bg=bg,
-            fg=fg,
-            activebackground=hover,
-            activeforeground=fg,
-            disabledforeground=self.DISABLED,
-            relief="flat",
-            bd=0,
-            padx=8 if small else 12,
-            pady=4 if small else 6,
-            cursor="hand2",
-            font=self.font_button_small if small else self.font_button,
-            highlightthickness=0 if kind == "primary" else 1,
-            highlightbackground=self.BORDER,
-            highlightcolor=self.BORDER,
-            **kwargs
+        return RoundedButton(
+            parent, text, command=command, palette=self.palette,
+            kind=kind, small=small, **kwargs
         )
-
-        def enter(_event):
-            if str(button["state"]) != "disabled":
-                button.configure(bg=hover)
-
-        def leave(_event):
-            if str(button["state"]) != "disabled":
-                button.configure(bg=bg)
-
-        button.bind("<Enter>", enter)
-        button.bind("<Leave>", leave)
-        button._mv_bg = bg
-        button._mv_hover = hover
-        return button
 
     def _make_card(self, parent, title):
-        outer = tk.Frame(
-            parent,
-            bg=self.CARD,
-            bd=0,
-            highlightthickness=1,
-            highlightbackground=self.BORDER,
-        )
-        head = tk.Frame(outer, bg=self.CARD)
-        head.pack(fill="x", padx=12, pady=(8, 0))
+        outer = RoundedCard(parent, self.palette, radius=16, pad=14)
+        head = tk.Frame(outer.inner, bg=self.CARD)
+        head.pack(fill="x")
         tk.Label(
             head,
             text=title.upper(),
             bg=self.CARD,
-            fg=self.ACCENT,
+            fg=self.ACCENT_DARK,
             font=self.font_card,
             anchor="w",
         ).pack(side="left")
-        body = tk.Frame(outer, bg=self.CARD)
-        body.pack(fill="both", expand=True, padx=12, pady=(6, 8))
+        body = tk.Frame(outer.inner, bg=self.CARD)
+        body.pack(fill="both", expand=True, pady=(6, 0))
         return outer, body, head
 
-    def _legend_chip(self, parent, color, text):
+    def _legend_chip(self, parent, color, text, outlined=False):
         frame = tk.Frame(parent, bg=self.BG)
         canvas = tk.Canvas(frame, width=12, height=12, bg=self.BG, highlightthickness=0, bd=0)
-        canvas.create_rectangle(1, 1, 11, 11, fill=color, outline=self.BORDER)
+        canvas.create_oval(
+            1, 1, 11, 11, fill=color,
+            outline=self.BORDER if outlined else color,
+        )
         canvas.pack(side="left", padx=(0, 5))
         tk.Label(frame, text=text, bg=self.BG, fg=self.MUTED, font=self.font_small).pack(side="left")
         frame.pack(side="left", padx=(0, 14))
@@ -590,13 +775,13 @@ class MazeGui:
         return label
 
     def _build_ui(self):
-        self.file_var = tk.StringVar(value="Ningún sector seleccionado")
-        self.status_var = tk.StringVar(value="Abre un sector .in para iniciar la misión.")
+        self.file_var = tk.StringVar(value="Ningún campo seleccionado")
+        self.status_var = tk.StringVar(value="Abre un campo .in para iniciar la cosecha.")
         self.zoom_var = tk.StringVar(value="100 %")
-        self.desc_var = tk.StringVar(value="Elige una ruta de vuelo disponible.")
+        self.desc_var = tk.StringVar(value="Elige una ruta de cosecha disponible.")
         self.warn_var = tk.StringVar(value="Sin advertencias.")
         self.step_var = tk.StringVar(value="—")
-        self.speed_label_var = tk.StringVar(value="10 pasos/s")
+        self.speed_label_var = tk.StringVar(value="10 celdas/s")
         self.speed_var = tk.DoubleVar(value=3.0)
         self.quick_var = tk.StringVar(value="")
 
@@ -618,7 +803,7 @@ class MazeGui:
             titles,
             textvariable=self.file_var,
             bg=self.PANEL,
-            fg=self.ACCENT,
+            fg=self.ACCENT_DARK,
             font=self.font_small,
             anchor="w",
         ).pack(anchor="w", pady=(3, 0))
@@ -626,7 +811,7 @@ class MazeGui:
         controls = tk.Frame(header_inner, bg=self.PANEL)
         controls.grid(row=0, column=1, sticky="e")
         tk.Label(
-            controls, text="Sectores:", bg=self.PANEL, fg=self.MUTED, font=self.font_small
+            controls, text="Campos:", bg=self.PANEL, fg=self.MUTED, font=self.font_small
         ).pack(side="left", padx=(0, 6))
         self.quick_combo = ttk.Combobox(
             controls,
@@ -637,7 +822,7 @@ class MazeGui:
             style="Dark.TCombobox",
         )
         self.quick_combo.pack(side="left", padx=(0, 10))
-        self._flat_button(controls, "Abrir .in", self.open_dialog, kind="primary").pack(side="left")
+        self._flat_button(controls, "Abrir campo", self.open_dialog, kind="primary").pack(side="left")
         self.regenerate_btn = self._flat_button(controls, "Regenerar", self.run_solver)
         self.regenerate_btn.pack(side="left", padx=(8, 0))
 
@@ -682,13 +867,13 @@ class MazeGui:
 
         toolbar = tk.Frame(left, bg=self.BG)
         toolbar.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        self._legend_chip(toolbar, self.WALL, "Muro")
-        self._legend_chip(toolbar, self.FLOOR, "Espacio libre")
-        self._legend_chip(toolbar, self.ROOT_COLOR, "Nave A")
-        self._legend_chip(toolbar, self.TARGET_COLOR, "Planeta B")
-        self._legend_chip(toolbar, self.gradient[80], "Explorado")
-        self._legend_chip(toolbar, self.CURRENT, "Sonda")
-        self._legend_chip(toolbar, self.TRAIL, "Estela")
+        self._legend_chip(toolbar, self.WALL, "Piedra", outlined=True)
+        self._legend_chip(toolbar, self.FLOOR, "Pasto alto")
+        self._legend_chip(toolbar, self.ROOT_COLOR, "Granjero A", outlined=True)
+        self._legend_chip(toolbar, self.TARGET_COLOR, "Granero B", outlined=True)
+        self._legend_chip(toolbar, self.gradient[80], "Pasto cortado")
+        self._legend_chip(toolbar, self.CURRENT, "Granjero")
+        self._legend_chip(toolbar, self.TRAIL, "Sendero")
 
         zoom_box = tk.Frame(toolbar, bg=self.BG)
         zoom_box.pack(side="right")
@@ -699,6 +884,19 @@ class MazeGui:
             side="left", padx=4
         )
         self._flat_button(zoom_box, "Ajustar", self.fit_view, small=True).pack(side="left")
+
+        view_box = tk.Frame(toolbar, bg=self.BG)
+        view_box.pack(side="right", padx=(0, 16))
+        tk.Label(view_box, text="Vista:", bg=self.BG, fg=self.MUTED,
+                 font=self.font_small).pack(side="left", padx=(0, 6))
+        self.view_iso_btn = self._flat_button(
+            view_box, "3D", lambda: self._switch_view("iso"), small=True, width=2
+        )
+        self.view_iso_btn.pack(side="left")
+        self.view_top_btn = self._flat_button(
+            view_box, "2D", lambda: self._switch_view("top"), small=True, width=2
+        )
+        self.view_top_btn.pack(side="left", padx=(4, 0))
 
         self._build_right_panel(body)
 
@@ -724,7 +922,7 @@ class MazeGui:
         self.right_canvas.bind("<Configure>", self._on_right_canvas_configure)
 
         # Tarjeta de información
-        info_card, info_body, info_head = self._make_card(right, "Sector")
+        info_card, info_body, info_head = self._make_card(right, "Campo")
         info_card.pack(fill="x", pady=(0, 10))
         self.details_btn = self._flat_button(
             info_head, "Detalles", self.show_details, small=True
@@ -739,9 +937,9 @@ class MazeGui:
         }
         rows = [
             ("Dimensiones", "dims"),
-            ("Nave A", "root"),
-            ("Planeta B", "target"),
-            ("Celdas libres", "paths"),
+            ("Granjero A", "root"),
+            ("Granero B", "target"),
+            ("Pasto alto", "paths"),
         ]
         for idx, (text, key) in enumerate(rows):
             tk.Label(
@@ -769,10 +967,10 @@ class MazeGui:
         self.warn_lbl.grid(row=len(rows), column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         # Tarjeta de recorridos
-        trav_card, trav_body, _ = self._make_card(right, "Ruta de vuelo")
+        trav_card, trav_body, _ = self._make_card(right, "Ruta de cosecha")
         trav_card.pack(fill="x", pady=(0, 10))
 
-        self._group_label(trav_body, "SONDEO DEL SECTOR")
+        self._group_label(trav_body, "EXPLORACIÓN DEL CAMPO")
         self.kind_rows = {}
         for key, label, group, _desc in KINDS:
             if group != "tree":
@@ -783,7 +981,7 @@ class MazeGui:
 
         separator = tk.Frame(trav_body, bg=self.BORDER, height=1)
         separator.pack(fill="x", pady=(6, 0))
-        self._group_label(trav_body, "TRAYECTORIA PLANETA ↔ NAVE")
+        self._group_label(trav_body, "CAMINO AL GRANERO")
         for key, label, group, _desc in KINDS:
             if group != "path":
                 continue
@@ -861,7 +1059,7 @@ class MazeGui:
         ).pack(fill="x")
 
         # Tarjeta de orden de nodos
-        order_card, order_body, _ = self._make_card(right, "Bitácora de vuelo")
+        order_card, order_body, _ = self._make_card(right, "Registro de corte")
         order_card.pack(fill="x")
         self.order_card = order_card
         order_body.grid_rowconfigure(1, weight=1)
@@ -876,10 +1074,10 @@ class MazeGui:
         ).grid(row=0, column=0, sticky="w", pady=(0, 3))
         self.order_list = tk.Listbox(
             order_body,
-            bg=self.CANVAS_BG,
+            bg=self.CARD_ALT,
             fg=self.TEXT,
-            selectbackground=self.ACCENT_DARK,
-            selectforeground="#ffffff",
+            selectbackground=self.ACCENT,
+            selectforeground="#fffdf6",
             activestyle="none",
             exportselection=False,
             relief="flat",
@@ -942,9 +1140,9 @@ class MazeGui:
         self.quick_combo.configure(values=self._bundled_files())
         path = filedialog.askopenfilename(
             parent=self.root,
-            title="Selecciona un sector (.in)",
+            title="Selecciona un campo (.in)",
             initialdir=self.base_dir,
-            filetypes=[("Sectores", "*.in"), ("Todos los archivos", "*.*")],
+            filetypes=[("Campos", "*.in"), ("Todos los archivos", "*.*")],
         )
         if path:
             self.load_path(path)
@@ -972,8 +1170,7 @@ class MazeGui:
         self.index = 0
         self.solver_issues = []
         self.log = ""
-        self.auto_fit = True
-        self.zoom = 1.0
+        self._reset_view_states()
         self._update_zoom_label()
 
         self.file_var.set(self._short_path(path))
@@ -984,7 +1181,7 @@ class MazeGui:
         self._set_controls_enabled(False)
         self._update_progress()
         self.redraw()
-        self.set_status("Sector cargado. Ejecutando a.exe…", "info")
+        self.set_status("Campo cargado. Ejecutando a.exe…", "info")
         self.root.after(60, self.run_solver)
 
     def _update_quick_combo(self):
@@ -1082,7 +1279,7 @@ class MazeGui:
             # se reintenta sobre una copia temporal (carpeta sin permisos).
             if not sequences and "created" in log:
                 try:
-                    temp_root = tempfile.mkdtemp(prefix="mazeview_")
+                    temp_root = tempfile.mkdtemp(prefix="maze_")
                     temp_input = os.path.join(temp_root, os.path.basename(self.path))
                     shutil.copy2(self.path, temp_input)
                     proc2 = self._run_solver_process(temp_input)
@@ -1339,7 +1536,8 @@ class MazeGui:
         self._stop_playback()
         self._clear_overlay()
         self.current_kind = kind
-        self.sequence = self.sequences[kind]
+        raw = list(self.sequences[kind])
+        self.sequence = list(reversed(raw)) if kind in PATH_KINDS else raw
         self.index = 0
         self._update_kind_rows()
         self._set_controls_enabled(True)
@@ -1372,7 +1570,7 @@ class MazeGui:
 
     def _on_speed_change(self, _value=None):
         idx = max(0, min(len(SPEED_VALUES) - 1, int(round(float(self.speed_var.get())))))
-        self.speed_label_var.set("{} pasos/s".format(SPEED_VALUES[idx]))
+        self.speed_label_var.set("{} celdas/s".format(SPEED_VALUES[idx]))
 
     def _current_speed(self):
         idx = max(0, min(len(SPEED_VALUES) - 1, int(round(float(self.speed_var.get())))))
@@ -1474,7 +1672,16 @@ class MazeGui:
         if not self.sequence:
             return
         self._stop_playback()
-        self.set_index(0)
+        if len(self.sequence) > 1500:
+            self.index = 0
+            self.redraw()
+            self._update_progress()
+            self._update_order_selection()
+        else:
+            self._clear_overlay()
+            self._update_marker_and_trail(animate=False)
+            self._update_progress()
+            self._update_order_selection()
         self.set_status("Reiniciado. Pulsa Reproducir o avanza paso a paso.", "info")
 
     def show_full(self):
@@ -1498,18 +1705,25 @@ class MazeGui:
             self._update_progress()
             return
 
+        if abs(target - self.index) > 500 and total > 1500:
+            self.index = target
+            self.redraw()
+            self._update_progress()
+            self._update_order_selection()
+            return
+
+        animate = False
         if target < self.index:
-            for i in range(target, self.index):
-                r, c = self.sequence[i]
-                ch = self.maze.grid[r][c]
-                if ch not in "AB":
-                    self.canvas.itemconfigure(self.cell_items[r][c], fill=self._base_color(ch))
+            for i in range(self.index - 1, target - 1, -1):
+                self._uncut_step(i)
             self.index = target
         else:
-            self._paint_range(self.index, target)
+            animate = (target - self.index) == 1 and target >= 2
+            for i in range(self.index, target):
+                self._cut_step(i, animate=animate and i == target - 1)
             self.index = target
 
-        self._update_marker_and_trail()
+        self._update_marker_and_trail(animate=animate)
         self._update_progress()
         self._update_order_selection()
 
@@ -1544,13 +1758,8 @@ class MazeGui:
 
     def _set_controls_enabled(self, enabled):
         state = "normal" if enabled else "disabled"
-        disabled_bg = "#0b1422"
         for button in (self.btn_prev, self.btn_play, self.btn_next, self.btn_reset, self.btn_full):
-            button.configure(
-                state=state,
-                bg=button._mv_bg if enabled else disabled_bg,
-                activebackground=button._mv_hover if enabled else disabled_bg,
-            )
+            button.set_enabled(enabled)
         try:
             self.speed.state(["!disabled"] if enabled else ["disabled"])
         except tk.TclError:
@@ -1583,6 +1792,10 @@ class MazeGui:
 
     def _cell_rect(self, row, col):
         tw = self.cell_px
+        if self.view_mode == "top":
+            x = self.ox + col * tw
+            y = self.oy + row * tw
+            return x, y, x + tw, y + tw
         cx = self.ox + (col - row) * tw * 0.5
         cy = self.oy + (col + row) * tw * 0.25
         return cx - tw * 0.5, cy - tw * 0.25, cx + tw * 0.5, cy + tw * 0.25
@@ -1593,84 +1806,119 @@ class MazeGui:
         idx = int(127 * step / (total - 1))
         return self.gradient[max(0, min(127, idx))]
 
-    def _draw_space(self, width, height):
-        """Fondo de espacio profundo: nebulosas, estrellas y destellos."""
-        self.star_items = []
+    def _prepare_cut_state(self):
+        self.cut_counts = {}
+        self._cut_prefix = {}
+        self._cut_total = len(self.sequence)
+        if not self.sequence or self.index <= 0 or not self.maze:
+            return
+        last = {}
+        for i in range(min(self.index, len(self.sequence))):
+            r, c = self.sequence[i]
+            if self.maze.grid[r][c] != "1":
+                continue
+            self.cut_counts[(r, c)] = self.cut_counts.get((r, c), 0) + 1
+            last[(r, c)] = i
+        self._cut_prefix = last
 
-        for _ in range(3):
-            cx = random.uniform(0, width)
-            cy = random.uniform(0, height)
-            rx = random.uniform(width * 0.12, width * 0.32)
-            ry = random.uniform(height * 0.10, height * 0.26)
+    def _cell_fill(self, ch, row, col):
+        if ch == "1" and (row, col) in self._cut_prefix:
+            return self._gradient_for(self._cut_prefix[(row, col)], self._cut_total)
+        return self._base_color(ch)
+
+    def _draw_backdrop(self, width, height):
+        bands = 30
+        top = _rgb(self.SKY_TOP)
+        bottom = _rgb(self.SKY_BOTTOM)
+        for i in range(bands):
+            t = i / max(1, bands - 1)
+            y0 = height * i / bands
+            y1 = height * (i + 1) / bands + 1
+            self.canvas.create_rectangle(
+                0, y0, width, y1, fill=_hex(_mix(top, bottom, t)), outline=""
+            )
+
+        sun_x, sun_y = width * 0.82, height * 0.17
+        sun_r = min(width, height) * 0.052
+        for factor, color in ((2.1, "#f5eccb"), (1.55, "#f3e4b6")):
             self.canvas.create_oval(
-                cx - rx,
-                cy - ry,
-                cx + rx,
-                cy + ry,
-                fill=random.choice(self.NEBULA_COLORS),
-                outline="",
-                stipple="gray12",
+                sun_x - sun_r * factor,
+                sun_y - sun_r * factor,
+                sun_x + sun_r * factor,
+                sun_y + sun_r * factor,
+                fill=color, outline="", stipple="gray12",
             )
+        self.canvas.create_oval(
+            sun_x - sun_r, sun_y - sun_r, sun_x + sun_r, sun_y + sun_r,
+            fill=self.SUN_COLOR, outline="#e7c96f",
+        )
 
-        count = max(40, min(260, int(width * height / 5600)))
-        for _ in range(count):
-            x = random.uniform(0, width)
-            y = random.uniform(0, height)
-            radius = random.choice((0.55, 0.75, 1.0, 1.35, 1.8))
-            color = random.choice(self.STAR_COLORS)
-            self.star_items.append(
-                self.canvas.create_oval(
-                    x - radius,
-                    y - radius,
-                    x + radius,
-                    y + radius,
-                    fill=color,
-                    outline="",
-                )
-            )
-
-        for _ in range(max(3, count // 45)):
-            x = random.uniform(0, width)
-            y = random.uniform(0, height)
-            radius = random.uniform(1.5, 2.5)
+        for fx, fy, size in ((0.13, 0.16, 1.0), (0.37, 0.10, 0.72), (0.62, 0.21, 0.86)):
+            x, y = width * fx, height * fy
+            w = min(width, height) * 0.10 * size
+            h = w * 0.34
+            self.canvas.create_oval(x - w, y - h, x + w, y + h, fill=self.CLOUD, outline="")
             self.canvas.create_oval(
-                x - radius * 2.6,
-                y - radius * 2.6,
-                x + radius * 2.6,
-                y + radius * 2.6,
-                fill="#101b2c",
-                outline="",
+                x - w * 0.55, y - h * 1.7, x + w * 0.45, y + h * 0.35,
+                fill=self.CLOUD, outline="",
             )
-            self.star_items.append(
-                self.canvas.create_oval(
-                    x - radius,
-                    y - radius,
-                    x + radius,
-                    y + radius,
-                    fill="#ffffff",
-                    outline="",
-                )
+            self.canvas.create_oval(
+                x - w * 0.10, y - h * 2.1, x + w * 0.85, y + h * 0.40,
+                fill=self.CLOUD, outline="",
             )
 
-    def _twinkle_stars(self):
-        self._star_job = None
-        if self.star_items:
-            for item in random.sample(self.star_items, min(8, len(self.star_items))):
-                try:
-                    self.canvas.itemconfigure(item, fill=random.choice(self.STAR_COLORS))
-                except tk.TclError:
-                    pass
-        self._star_job = self.root.after(random.randint(260, 720), self._twinkle_stars)
+        horizon = height * 0.62
+        far = [
+            -width * 0.15, horizon,
+            width * 0.08, horizon - height * 0.09,
+            width * 0.30, horizon - height * 0.02,
+            width * 0.50, horizon - height * 0.12,
+            width * 0.72, horizon - height * 0.03,
+            width * 0.92, horizon - height * 0.10,
+            width * 1.15, horizon,
+        ]
+        self.canvas.create_polygon(
+            *far, smooth=True, splinesteps=30, fill=self.HILL_FAR, outline=""
+        )
+        near = [
+            -width * 0.15, horizon + height * 0.02,
+            width * 0.12, horizon - height * 0.055,
+            width * 0.34, horizon + height * 0.005,
+            width * 0.58, horizon - height * 0.06,
+            width * 0.82, horizon + height * 0.010,
+            width * 1.15, horizon - height * 0.02,
+            width * 1.15, height,
+            -width * 0.15, height,
+        ]
+        self.canvas.create_polygon(
+            *near, smooth=True, splinesteps=30, fill=self.HILL_NEAR, outline=""
+        )
+
+        for i in range(7):
+            y = horizon + height * (0.045 + i * 0.060)
+            self.canvas.create_line(
+                0, y, width, y + height * 0.015,
+                fill=self.FIELD_STRIPE, width=max(1, int(height * 0.018)),
+            )
 
     def redraw(self):
+        self._cancel_farmer_anims()
+        self._cancel_clipping()
         self.canvas.delete("all")
         self.cell_items = []
         self.marker_items = []
         self.trail_items = []
+        self.grass_items = {}
+        self.cut_counts = {}
+        self._cut_prefix = {}
+        self._cut_total = len(self.sequence)
+        self._grass_budget = 6000
+        self._farmer_xy = None
+        self._prepare_cut_state()
 
         width = max(self.canvas.winfo_width(), 240)
         height = max(self.canvas.winfo_height(), 200)
-        self._draw_space(width, height)
+        self._draw_backdrop(width, height)
 
         if not self.maze:
             self.cell_px = 0
@@ -1680,7 +1928,7 @@ class MazeGui:
             self.canvas.create_text(
                 width / 2,
                 height / 2,
-                text="Abre un sector .in para iniciar la misión",
+                text="Abre un campo .in para comenzar la cosecha",
                 fill=self.MUTED,
                 font=self.font_placeholder,
                 justify="center",
@@ -1688,6 +1936,14 @@ class MazeGui:
             self.canvas.configure(scrollregion=(0, 0, width, height))
             return
 
+        if self.view_mode == "top":
+            self._redraw_top(width, height)
+        else:
+            self._redraw_iso(width, height)
+
+        self._update_marker_and_trail(animate=False)
+
+    def _redraw_iso(self, width, height):
         maze = self.maze
         rows, cols = maze.rows, maze.cols
         span = rows + cols
@@ -1719,45 +1975,12 @@ class MazeGui:
         bottom = self.oy + (rows + cols - 1) * hh + plate_pad
 
         plate = (
-            self.ox,
-            top,
-            right,
-            self.oy + (cols - 1) * hh,
-            self.ox + (cols - rows) * hw,
-            bottom,
-            left,
-            self.oy + (rows - 1) * hh,
+            self.ox, top,
+            right, self.oy + (cols - 1) * hh,
+            self.ox + (cols - rows) * hw, bottom,
+            left, self.oy + (rows - 1) * hh,
         )
-        self.canvas.create_polygon(
-            *self._shift_points(plate, 0.0, plate_depth + max(4.0, tw * 0.18)),
-            fill="#040810",
-            outline="",
-        )
-        self.canvas.create_polygon(
-            plate[6],
-            plate[7],
-            plate[4],
-            plate[5],
-            plate[4],
-            plate[5] + plate_depth,
-            plate[6],
-            plate[7] + plate_depth,
-            fill="#0b141d",
-            outline="",
-        )
-        self.canvas.create_polygon(
-            plate[4],
-            plate[5],
-            plate[2],
-            plate[3],
-            plate[2],
-            plate[3] + plate_depth,
-            plate[4],
-            plate[5] + plate_depth,
-            fill="#08111a",
-            outline="",
-        )
-        self.canvas.create_polygon(plate, fill="#101b27", outline=self.BORDER, width=1)
+        self._draw_plate_iso(plate, plate_depth, tw)
 
         ids = [[None] * cols for _ in range(rows)]
         for depth in range(rows + cols - 1):
@@ -1765,34 +1988,97 @@ class MazeGui:
             last = min(rows - 1, depth)
             for r in range(first, last + 1):
                 c = depth - r
-                ids[r][c] = self._draw_cell(r, c, hw, hh, wall_h, tw)
-                if maze.root == (r, c):
-                    self._draw_ship(r, c)
+                ids[r][c] = self._draw_cell_iso(r, c, hw, hh, wall_h, tw)
                 if maze.target == (r, c):
-                    self._draw_planet(r, c)
+                    self._draw_barn_iso(r, c)
+                if maze.grid[r][c] == "1" and (r, c) not in self._cut_prefix:
+                    self._add_grass_iso(r, c, self.ox + (c - r) * hw, self.oy + (c + r) * hh, tw)
         self.cell_items = ids
-
-        bracket = min(34.0, max(10.0, min(right - left, bottom - top) * 0.12))
-        for cx, cy, sx, sy in ((left, top, 1, 1), (right, top, -1, 1), (left, bottom, 1, -1), (right, bottom, -1, -1)):
-            self.canvas.create_line(
-                cx,
-                cy + sy * bracket,
-                cx,
-                cy,
-                cx + sx * bracket,
-                cy,
-                fill=self.ACCENT_DARK,
-                width=1,
-            )
 
         shadow_extent = plate_depth + max(4.0, tw * 0.18)
         scroll_w = max(width, right + shadow_extent + PAD)
         scroll_h = max(height, bottom + shadow_extent + PAD)
         self.canvas.configure(scrollregion=(0, 0, scroll_w, scroll_h))
 
-        if self.sequence and self.index > 0:
-            self._paint_range(0, self.index)
-            self._update_marker_and_trail()
+    def _draw_plate_iso(self, plate, depth, tw):
+        self.canvas.create_polygon(
+            *self._shift_points(plate, 0.0, depth + max(4.0, tw * 0.18)),
+            fill="#b9a77e", outline="",
+        )
+        self.canvas.create_polygon(
+            plate[6], plate[7], plate[4], plate[5],
+            plate[4], plate[5] + depth, plate[6], plate[7] + depth,
+            fill="#9f8a62", outline="",
+        )
+        self.canvas.create_polygon(
+            plate[4], plate[5], plate[2], plate[3],
+            plate[2], plate[3] + depth, plate[4], plate[5] + depth,
+            fill="#8f7a54", outline="",
+        )
+        self.canvas.create_polygon(plate, fill="#c8b58b", outline="#a9956d", width=1)
+        cx = sum(plate[0::2]) / 4.0
+        cy = sum(plate[1::2]) / 4.0
+        radius = max(8.0, tw * 0.6)
+        self.canvas.create_oval(
+            cx - radius, cy - radius * 0.38,
+            cx + radius, cy + radius * 0.38,
+            outline="#b5a078", width=max(1, int(tw * 0.04)),
+            stipple="gray50",
+        )
+
+    def _redraw_top(self, width, height):
+        maze = self.maze
+        rows, cols = maze.rows, maze.cols
+        avail_w = max(40.0, width - 2 * PAD)
+        avail_h = max(40.0, height - 2 * PAD)
+
+        if self.auto_fit:
+            fit_w = avail_w / max(1, cols)
+            fit_h = avail_h / max(1, rows)
+            self.base_cell = max(2.5, min(fit_w, fit_h) * 0.96)
+
+        tw = max(2.5, self.base_cell * self.zoom)
+        self.cell_px = tw
+        self.wall_h = 0.0
+        plate_pad = max(7.0, min(26.0, tw * 0.45))
+        board_w = cols * tw
+        board_h = rows * tw
+        margin_x = max(0.0, (width - 2 * PAD - 2 * plate_pad - board_w) / 2.0)
+        margin_y = max(0.0, (height - 2 * PAD - 2 * plate_pad - board_h) / 2.0)
+        self.ox = PAD + plate_pad + margin_x
+        self.oy = PAD + plate_pad + margin_y
+
+        left = self.ox - plate_pad
+        top = self.oy - plate_pad
+        right = self.ox + board_w + plate_pad
+        bottom = self.oy + board_h + plate_pad
+        radius = max(5.0, min(14.0, tw * 0.7))
+        self.canvas.create_polygon(
+            *_rounded_points(left + 4, top + 6, right + 4, bottom + 6, radius),
+            smooth=True, splinesteps=22, fill="#b9a77e", outline="",
+        )
+        self.canvas.create_polygon(
+            *_rounded_points(left, top, right, bottom, radius),
+            smooth=True, splinesteps=22, fill="#c8b58b", outline="#a9956d", width=1,
+        )
+        self.canvas.create_rectangle(
+            self.ox, self.oy, self.ox + board_w, self.oy + board_h,
+            fill="#d8caa9", outline="#b8a77f",
+        )
+
+        ids = [[None] * cols for _ in range(rows)]
+        for r in range(rows):
+            for c in range(cols):
+                ids[r][c] = self._draw_cell_top(r, c, tw)
+                if maze.target == (r, c):
+                    self._draw_barn_top(r, c)
+                if maze.grid[r][c] == "1" and (r, c) not in self._cut_prefix:
+                    self._add_grass_top(r, c, tw)
+        self.cell_items = ids
+
+        scroll_w = max(width, right + 14 + PAD)
+        scroll_h = max(height, bottom + 14 + PAD)
+        self.canvas.configure(scrollregion=(0, 0, scroll_w, scroll_h))
 
     @staticmethod
     def _shift_points(points, dx, dy):
@@ -1806,7 +2092,7 @@ class MazeGui:
     def _is_wall_char(ch):
         return ch not in "1AB"
 
-    def _draw_cell(self, row, col, hw, hh, wall_h, tw):
+    def _draw_cell_iso(self, row, col, hw, hh, wall_h, tw):
         ch = self.maze.grid[row][col]
         cx = self.ox + (col - row) * hw
         cy = self.oy + (col + row) * hh
@@ -1816,99 +2102,281 @@ class MazeGui:
             wall_color = self.WALL if ch == "0" else self.UNKNOWN
             if tw < 7.5:
                 return self.canvas.create_polygon(
-                    cx,
-                    top_y - hh,
-                    cx + hw,
-                    top_y,
-                    cx,
-                    top_y + hh,
-                    cx - hw,
-                    top_y,
-                    fill=wall_color,
-                    outline="",
+                    cx, top_y - hh, cx + hw, top_y,
+                    cx, top_y + hh, cx - hw, top_y,
+                    fill=wall_color, outline="",
                 )
             left_covered = row + 1 < self.maze.rows and self._is_wall_char(self.maze.grid[row + 1][col])
             right_covered = col + 1 < self.maze.cols and self._is_wall_char(self.maze.grid[row][col + 1])
             if not left_covered:
                 self.canvas.create_polygon(
-                    cx - hw,
-                    top_y,
-                    cx,
-                    top_y + hh,
-                    cx,
-                    cy + hh,
-                    cx - hw,
-                    cy,
-                    fill=self.WALL_SIDE_LIGHT,
-                    outline="",
+                    cx - hw, top_y, cx, top_y + hh,
+                    cx, cy + hh, cx - hw, cy,
+                    fill=self.WALL_SIDE_LIGHT, outline="",
                 )
             if not right_covered:
                 self.canvas.create_polygon(
-                    cx,
-                    top_y + hh,
-                    cx + hw,
-                    top_y,
-                    cx + hw,
-                    cy,
-                    cx,
-                    cy + hh,
-                    fill=self.WALL_SIDE_DARK,
-                    outline="",
+                    cx, top_y + hh, cx + hw, top_y,
+                    cx + hw, cy, cx, cy + hh,
+                    fill=self.WALL_SIDE_DARK, outline="",
                 )
-            return self.canvas.create_polygon(
-                cx,
-                top_y - hh,
-                cx + hw,
-                top_y,
-                cx,
-                top_y + hh,
-                cx - hw,
-                top_y,
-                fill=wall_color,
-                outline=self.GRID,
-                width=1,
+            top = self.canvas.create_polygon(
+                cx, top_y - hh, cx + hw, top_y,
+                cx, top_y + hh, cx - hw, top_y,
+                fill=wall_color, outline=self.GRID, width=1,
             )
+            if tw >= 18:
+                self._decorate_stone_iso(cx, top_y, hw, hh)
+            return top
 
+        base = self._cell_fill(ch, row, col)
         if tw < 9.5:
             return self.canvas.create_polygon(
-                cx,
-                cy - hh,
-                cx + hw,
-                cy,
-                cx,
-                cy + hh,
-                cx - hw,
-                cy,
-                fill=self._base_color(ch),
-                outline="",
+                cx, cy - hh, cx + hw, cy,
+                cx, cy + hh, cx - hw, cy,
+                fill=base, outline="",
             )
 
         inset = max(0.35, min(2.0, tw * 0.06))
         k = max(0.55, 1.0 - 2.0 * inset / tw)
         self.canvas.create_polygon(
-            cx,
-            cy - hh,
-            cx + hw,
-            cy,
-            cx,
-            cy + hh,
-            cx - hw,
-            cy,
-            fill="#0b1620",
-            outline=self.GRID,
-            width=1,
+            cx, cy - hh, cx + hw, cy,
+            cx, cy + hh, cx - hw, cy,
+            fill="#b8a57b", outline=self.GRID, width=1,
         )
         return self.canvas.create_polygon(
-            cx,
-            cy - hh * k,
-            cx + hw * k,
-            cy,
-            cx,
-            cy + hh * k,
-            cx - hw * k,
-            cy,
-            fill=self._base_color(ch),
-            outline="",
+            cx, cy - hh * k, cx + hw * k, cy,
+            cx, cy + hh * k, cx - hw * k, cy,
+            fill=base, outline="",
+        )
+
+    def _decorate_stone_iso(self, cx, cy, hw, hh):
+        n = (cx, cy - hh)
+        e = (cx + hw, cy)
+        s = (cx, cy + hh)
+        w = (cx - hw, cy)
+        mid_ne = ((n[0] + e[0]) / 2, (n[1] + e[1]) / 2)
+        mid_se = ((e[0] + s[0]) / 2, (e[1] + s[1]) / 2)
+        mid_sw = ((s[0] + w[0]) / 2, (s[1] + w[1]) / 2)
+        mid_nw = ((w[0] + n[0]) / 2, (w[1] + n[1]) / 2)
+        center = (cx, cy)
+        stones = (
+            (n, mid_ne, center, mid_nw, self.WALL_LIGHT),
+            (mid_ne, e, mid_se, center, self.WALL),
+            (center, mid_se, s, mid_sw, self.WALL_LIGHT),
+            (mid_nw, center, mid_sw, w, self.WALL),
+        )
+        for a, b, c, d, color in stones:
+            self.canvas.create_polygon(
+                a[0], a[1], b[0], b[1], c[0], c[1], d[0], d[1],
+                fill=color, outline=self.WALL_SIDE_LIGHT, width=1,
+            )
+        self.canvas.create_line(
+            w[0] * 0.86 + cx * 0.14, w[1] * 0.86 + cy * 0.14,
+            mid_sw[0] * 0.92 + cx * 0.08, mid_sw[1] * 0.92 + cy * 0.08,
+            fill=self.WALL_MOSS, width=max(1, int(self.cell_px * 0.035)),
+            capstyle="round",
+        )
+
+    def _draw_cell_top(self, row, col, tw):
+        ch = self.maze.grid[row][col]
+        x0 = self.ox + col * tw
+        y0 = self.oy + row * tw
+        x1, y1 = x0 + tw, y0 + tw
+        if self._is_wall_char(ch):
+            wall_color = self.WALL if ch == "0" else self.UNKNOWN
+            inset = max(0.0, min(2.0, tw * 0.06))
+            if tw >= 6:
+                self.canvas.create_rectangle(
+                    x0 + inset + 1.4, y0 + inset + 1.8,
+                    x1 - inset + 1.4, y1 - inset + 1.8,
+                    fill="#b9a77e", outline="",
+                )
+            item = self.canvas.create_rectangle(
+                x0 + inset, y0 + inset, x1 - inset, y1 - inset,
+                fill=wall_color, outline=self.GRID if tw >= 9 else "",
+            )
+            if tw >= 18:
+                self._decorate_stone_top(x0 + inset, y0 + inset, x1 - inset, y1 - inset)
+            return item
+
+        base = self._cell_fill(ch, row, col)
+        inset = max(0.0, min(2.0, tw * 0.045))
+        return self.canvas.create_rectangle(
+            x0 + inset, y0 + inset, x1 - inset, y1 - inset,
+            fill=base, outline=self.GRID if tw >= 10 else "",
+        )
+
+    def _decorate_stone_top(self, x0, y0, x1, y1):
+        w, h = x1 - x0, y1 - y0
+        mid_x, mid_y = x0 + w / 2, y0 + h / 2
+        stones = (
+            (x0, y0, mid_x - 1, mid_y - 1),
+            (mid_x + 1, y0, x1, mid_y - 1),
+            (x0, mid_y + 1, mid_x - 1, y1),
+            (mid_x + 1, mid_y + 1, x1, y1),
+        )
+        for idx, (a, b, c, d) in enumerate(stones):
+            self.canvas.create_rectangle(
+                a, b, c, d,
+                fill=self.WALL_LIGHT if idx % 2 == 0 else self.WALL,
+                outline=self.WALL_SIDE_LIGHT,
+            )
+        self.canvas.create_line(
+            x0 + w * 0.08, y1 - h * 0.10, x0 + w * 0.36, y1 - h * 0.16,
+            fill=self.WALL_MOSS, width=max(1, int(self.cell_px * 0.045)),
+            capstyle="round",
+        )
+
+    def _add_grass_iso(self, row, col, cx, cy, tw):
+        if tw < 12 or self._grass_budget <= 0:
+            return
+        rng = random.Random(row * 100003 + col * 97 + 17)
+        items = []
+        count = 3 if tw < 24 else 5
+        for i in range(count):
+            if self._grass_budget <= 0:
+                break
+            bx = cx + rng.uniform(-0.26, 0.26) * tw
+            by = cy + rng.uniform(-0.03, 0.13) * tw
+            height = tw * rng.uniform(0.06, 0.14)
+            lean = rng.uniform(-0.045, 0.045) * tw
+            color = self.GRASS_LIGHT if i % 3 else self.GRASS_DARK
+            items.append(
+                self.canvas.create_line(
+                    bx, by, bx + lean, by - height,
+                    fill=color, width=max(1, int(tw * 0.016)),
+                    capstyle="round",
+                )
+            )
+            self._grass_budget -= 1
+        self.grass_items[(row, col)] = items
+
+    def _add_grass_top(self, row, col, tw):
+        if tw < 12 or self._grass_budget <= 0:
+            return
+        rng = random.Random(row * 100019 + col * 89 + 31)
+        x0 = self.ox + col * tw
+        y0 = self.oy + row * tw
+        items = []
+        count = 3 if tw < 24 else 5
+        for i in range(count):
+            if self._grass_budget <= 0:
+                break
+            bx = x0 + rng.uniform(0.24, 0.76) * tw
+            by = y0 + rng.uniform(0.60, 0.84) * tw
+            height = tw * rng.uniform(0.10, 0.20)
+            lean = rng.uniform(-0.055, 0.055) * tw
+            color = self.GRASS_LIGHT if i % 3 else self.GRASS_DARK
+            items.append(
+                self.canvas.create_line(
+                    bx, by, bx + lean, by - height,
+                    fill=color, width=max(1, int(tw * 0.02)),
+                    capstyle="round",
+                )
+            )
+            self._grass_budget -= 1
+        self.grass_items[(row, col)] = items
+
+    def _set_grass_visible(self, row, col, visible):
+        for item in self.grass_items.get((row, col), ()):
+            try:
+                self.canvas.itemconfigure(item, state="normal" if visible else "hidden")
+            except tk.TclError:
+                pass
+
+    def _apply_cut_visual(self, row, col, step, total):
+        item = self.cell_items[row][col]
+        if item is not None:
+            self.canvas.itemconfigure(item, fill=self._gradient_for(step, total))
+        self._set_grass_visible(row, col, False)
+
+    def _draw_barn_iso(self, row, col):
+        cx, cy = self._sprite_center(row, col)
+        s = self.cell_px
+        if s < 7:
+            self.canvas.create_rectangle(
+                cx - s * 0.20, cy - s * 0.24, cx + s * 0.20, cy + s * 0.16,
+                fill=self.BARN_BODY, outline=self.BARN_DARK,
+            )
+            self.canvas.create_polygon(
+                cx - s * 0.26, cy - s * 0.22, cx, cy - s * 0.44,
+                cx + s * 0.26, cy - s * 0.22,
+                fill=self.BARN_ROOF, outline=self.BARN_DARK,
+            )
+            return
+        self.canvas.create_oval(
+            cx - s * 0.44, cy + s * 0.18, cx + s * 0.44, cy + s * 0.39,
+            fill="#a99772", outline="", stipple="gray50",
+        )
+        bw = s * 0.34
+        bh = s * 0.34
+        self.canvas.create_rectangle(
+            cx - bw, cy - bh * 0.34, cx + bw, cy + bh,
+            fill=self.BARN_BODY, outline=self.BARN_DARK, width=max(1, int(s * 0.02)),
+        )
+        self.canvas.create_polygon(
+            cx - bw - s * 0.05, cy - bh * 0.30,
+            cx, cy - bh * 1.10,
+            cx + bw + s * 0.05, cy - bh * 0.30,
+            fill=self.BARN_ROOF, outline=self.BARN_DARK, width=max(1, int(s * 0.02)),
+        )
+        self.canvas.create_rectangle(
+            cx - s * 0.105, cy + s * 0.04, cx + s * 0.105, cy + bh,
+            fill=self.BARN_DARK, outline=self.BARN_TRIM,
+            width=max(1, int(s * 0.018)),
+        )
+        self.canvas.create_line(
+            cx - s * 0.10, cy + s * 0.05, cx + s * 0.10, cy + s * 0.30,
+            fill=self.BARN_TRIM, width=max(1, int(s * 0.016)),
+        )
+        self.canvas.create_line(
+            cx + s * 0.10, cy + s * 0.05, cx - s * 0.10, cy + s * 0.30,
+            fill=self.BARN_TRIM, width=max(1, int(s * 0.016)),
+        )
+        self.canvas.create_rectangle(
+            cx - bw, cy - bh * 0.34, cx + bw, cy - bh * 0.27,
+            fill=self.BARN_TRIM, outline="",
+        )
+        if s >= 16:
+            self.canvas.create_oval(
+                cx + bw * 0.50, cy + bh * 0.40, cx + bw * 1.10, cy + bh * 0.80,
+                fill="#d8b86a", outline="#9f8545",
+            )
+
+    def _draw_barn_top(self, row, col):
+        cx, cy = self._sprite_center(row, col)
+        s = self.cell_px
+        if s < 7:
+            self.canvas.create_rectangle(
+                cx - s * 0.25, cy - s * 0.22, cx + s * 0.25, cy + s * 0.22,
+                fill=self.BARN_ROOF, outline=self.BARN_DARK,
+            )
+            return
+        self.canvas.create_oval(
+            cx - s * 0.36, cy - s * 0.24, cx + s * 0.36, cy + s * 0.32,
+            fill="#b9a77e", outline="",
+        )
+        self.canvas.create_rectangle(
+            cx - s * 0.32, cy - s * 0.26, cx + s * 0.32, cy + s * 0.26,
+            fill=self.BARN_BODY, outline=self.BARN_DARK, width=max(1, int(s * 0.02)),
+        )
+        self.canvas.create_polygon(
+            cx - s * 0.36, cy - s * 0.20,
+            cx, cy - s * 0.42,
+            cx + s * 0.36, cy - s * 0.20,
+            cx + s * 0.30, cy - s * 0.06,
+            cx - s * 0.30, cy - s * 0.06,
+            fill=self.BARN_ROOF, outline=self.BARN_DARK,
+        )
+        self.canvas.create_line(
+            cx, cy - s * 0.40, cx, cy - s * 0.08,
+            fill=self.BARN_TRIM, width=max(1, int(s * 0.022)),
+        )
+        self.canvas.create_rectangle(
+            cx - s * 0.10, cy + s * 0.02, cx + s * 0.10, cy + s * 0.24,
+            fill=self.BARN_DARK, outline=self.BARN_TRIM,
+            width=max(1, int(s * 0.014)),
         )
 
 
@@ -1916,280 +2384,455 @@ class MazeGui:
         x0, y0, x1, y1 = self._cell_rect(row, col)
         return (x0 + x1) / 2.0, (y0 + y1) / 2.0
 
-    def _draw_ship(self, row, col):
-        """Dibuja la nave (origen A) como un pequeño OVNI luminoso."""
-        cx, cy = self._sprite_center(row, col)
-        s = self.cell_px
-        if s < 7:
-            self.canvas.create_oval(
-                cx - s * 0.22,
-                cy - s * 0.22,
-                cx + s * 0.22,
-                cy + s * 0.22,
-                fill=self.ROOT_COLOR,
-                outline="#eef4f8",
+    def _draw_farmer(self, cx, cy, angle=-0.95, walking=False, phase=0.0):
+        if self.view_mode == "top":
+            return self._draw_farmer_top(cx, cy, angle, walking, phase)
+        return self._draw_farmer_iso(cx, cy, angle, walking, phase)
+
+    def _scythe_items(self, cx, cy, angle, s):
+        ss = min(s, 84.0)
+        hx, hy = cx + ss * 0.10, cy - ss * 0.10
+        dx, dy = math.cos(angle), math.sin(angle)
+        ex, ey = hx + dx * ss * 0.46, hy + dy * ss * 0.46
+        items = [
+            self.canvas.create_line(
+                hx, hy, ex, ey, fill="#7c5a3e",
+                width=max(1, int(ss * 0.035)), capstyle="round",
             )
-            return
-
-        self.canvas.create_oval(
-            cx - s * 0.46,
-            cy - s * 0.34,
-            cx + s * 0.46,
-            cy + s * 0.34,
-            outline="#2c4a52",
-            width=max(1, int(s * 0.09)),
-        )
-        self.canvas.create_polygon(
-            cx - s * 0.20,
-            cy + s * 0.16,
-            cx + s * 0.20,
-            cy + s * 0.16,
-            cx + s * 0.11,
-            cy + s * 0.42,
-            cx - s * 0.11,
-            cy + s * 0.42,
-            fill="#233843",
-            outline="",
-            stipple="gray25",
-        )
-        self.canvas.create_oval(
-            cx - s * 0.38,
-            cy - s * 0.13,
-            cx + s * 0.38,
-            cy + s * 0.17,
-            fill="#dfe7ee",
-            outline=self.ROOT_COLOR,
-            width=max(1, int(s * 0.05)),
-        )
-        self.canvas.create_oval(
-            cx - s * 0.16,
-            cy - s * 0.29,
-            cx + s * 0.16,
-            cy + s * 0.03,
-            fill="#9fc9bc",
-            outline="#eef4f8",
-        )
-        for dx, color in ((-0.22, "#c08b9a"), (0.0, "#d8b47a"), (0.22, "#8faec9")):
-            r = max(0.8, s * 0.035)
-            self.canvas.create_oval(
-                cx + dx * s - r,
-                cy + s * 0.07 - r,
-                cx + dx * s + r,
-                cy + s * 0.07 + r,
-                fill=color,
-                outline="",
+        ]
+        px, py = -dy, dx
+        midx = ex + px * ss * 0.14 - dx * ss * 0.015
+        midy = ey + py * ss * 0.14 - dy * ss * 0.015
+        tipx = ex + px * ss * 0.31 + dx * ss * 0.07
+        tipy = ey + py * ss * 0.31 + dy * ss * 0.07
+        items.append(
+            self.canvas.create_line(
+                ex, ey, midx, midy, tipx, tipy,
+                fill="#6f7a80", width=max(2, int(ss * 0.050)),
+                smooth=True, splinesteps=12, capstyle="round",
             )
-
-    def _draw_planet(self, row, col):
-        """Dibuja el destino (B) como un planeta anillado."""
-        cx, cy = self._sprite_center(row, col)
-        s = self.cell_px
-        if s < 7:
-            self.canvas.create_oval(
-                cx - s * 0.18,
-                cy - s * 0.18,
-                cx + s * 0.18,
-                cy + s * 0.18,
-                fill=self.TARGET_COLOR,
-                outline="#e0bcc6",
+        )
+        items.append(
+            self.canvas.create_line(
+                ex, ey, midx, midy, tipx, tipy,
+                fill="#d7dee0", width=max(1, int(ss * 0.026)),
+                smooth=True, splinesteps=12, capstyle="round",
             )
-            return
+        )
+        return items
 
-        self.canvas.create_oval(
-            cx - s * 0.40,
-            cy - s * 0.32,
-            cx + s * 0.40,
-            cy + s * 0.32,
-            outline="#4a3038",
-            width=max(1, int(s * 0.10)),
-        )
-        self.canvas.create_oval(
-            cx - s * 0.49,
-            cy - s * 0.15,
-            cx + s * 0.49,
-            cy + s * 0.15,
-            outline="#c9ad7f",
-            width=max(1, int(s * 0.05)),
-        )
-        self.canvas.create_oval(
-            cx - s * 0.27,
-            cy - s * 0.27,
-            cx + s * 0.27,
-            cy + s * 0.27,
-            fill=self.TARGET_COLOR,
-            outline="#e0bcc6",
-            width=max(1, int(s * 0.04)),
-        )
-        self.canvas.create_oval(
-            cx - s * 0.17,
-            cy - s * 0.17,
-            cx + s * 0.01,
-            cy + s * 0.01,
-            fill="#d6aab4",
-            outline="",
-        )
-        self.canvas.create_oval(
-            cx + s * 0.24,
-            cy - s * 0.31,
-            cx + s * 0.32,
-            cy - s * 0.23,
-            fill="#d8c8a4",
-            outline="",
-        )
-
-    def _draw_ufo_marker(self, cx, cy):
-        """Mini OVNI que se desplaza sobre el nodo actual."""
-        s = self.cell_px
+    def _draw_farmer_iso(self, cx, cy, angle=-0.95, walking=False, phase=0.0):
+        s = min(self.cell_px, 88.0)
         if s < 7:
-            r = max(1.6, s * 0.26)
+            r = max(1.6, s * 0.24)
             return [
                 self.canvas.create_oval(
-                    cx - r,
-                    cy - r,
-                    cx + r,
-                    cy + r,
-                    fill=self.CURRENT,
-                    outline="",
+                    cx - r, cy - r, cx + r, cy + r,
+                    fill=self.CURRENT, outline=self.BARN_DARK,
                 )
             ]
         items = []
-        glow = max(2.0, s * 0.44)
+        bob = math.sin(phase) * s * 0.018 if walking else 0.0
+        cy -= bob
         items.append(
             self.canvas.create_oval(
-                cx - glow,
-                cy - glow * 0.62,
-                cx + glow,
-                cy + glow * 0.62,
-                outline="#2c4a52",
-                width=max(2, int(s * 0.08)),
+                cx - s * 0.30, cy + s * 0.20, cx + s * 0.30, cy + s * 0.36,
+                fill="#a99772", outline="", stipple="gray50",
             )
         )
-        if s >= 7:
-            items.append(
-                self.canvas.create_polygon(
-                    cx - s * 0.18,
-                    cy + s * 0.12,
-                    cx + s * 0.18,
-                    cy + s * 0.12,
-                    cx + s * 0.09,
-                    cy + s * 0.40,
-                    cx - s * 0.09,
-                    cy + s * 0.40,
-                    fill="#233843",
-                    outline="",
-                    stipple="gray25",
-                )
-            )
+        swing = math.sin(phase) * s * 0.05 if walking else 0.0
         items.append(
-            self.canvas.create_oval(
-                cx - s * 0.33,
-                cy - s * 0.10,
-                cx + s * 0.33,
-                cy + s * 0.16,
-                fill="#e6edf4",
-                outline=self.ACCENT,
-                width=max(1, int(s * 0.04)),
+            self.canvas.create_line(
+                cx - s * 0.05, cy + s * 0.10,
+                cx - s * 0.10 + swing, cy + s * 0.30,
+                fill="#5c5140", width=max(1, int(s * 0.045)), capstyle="round",
+            )
+        )
+        items.append(
+            self.canvas.create_line(
+                cx + s * 0.05, cy + s * 0.10,
+                cx + s * 0.10 - swing, cy + s * 0.30,
+                fill="#5c5140", width=max(1, int(s * 0.045)), capstyle="round",
             )
         )
         items.append(
             self.canvas.create_oval(
-                cx - s * 0.14,
-                cy - s * 0.25,
-                cx + s * 0.14,
-                cy + s * 0.03,
-                fill="#9fc9bc",
-                outline="#eef4f8",
+                cx - s * 0.14, cy - s * 0.14, cx + s * 0.14, cy + s * 0.15,
+                fill=self.SHIRT, outline="#4e6276", width=max(1, int(s * 0.02)),
             )
         )
-        for dx, color in ((-0.18, "#c08b9a"), (0.0, "#d8b47a"), (0.18, "#8faec9")):
-            r = max(0.8, s * 0.032)
-            items.append(
-                self.canvas.create_oval(
-                    cx + dx * s - r,
-                    cy + s * 0.06 - r,
-                    cx + dx * s + r,
-                    cy + s * 0.06 + r,
-                    fill=color,
-                    outline="",
-                )
+        items.append(
+            self.canvas.create_line(
+                cx + s * 0.08, cy - s * 0.06, cx + s * 0.17, cy + s * 0.03,
+                fill=self.SKIN, width=max(1, int(s * 0.035)), capstyle="round",
             )
+        )
+        items.append(
+            self.canvas.create_line(
+                cx - s * 0.08, cy - s * 0.06, cx - s * 0.16, cy + s * 0.04,
+                fill=self.SKIN, width=max(1, int(s * 0.035)), capstyle="round",
+            )
+        )
+        items.append(
+            self.canvas.create_oval(
+                cx - s * 0.10, cy - s * 0.29, cx + s * 0.10, cy - s * 0.09,
+                fill=self.SKIN, outline="#b8875f", width=max(1, int(s * 0.015)),
+            )
+        )
+        items.append(
+            self.canvas.create_oval(
+                cx - s * 0.20, cy - s * 0.31, cx + s * 0.20, cy - s * 0.23,
+                fill=self.HAT, outline="#a88947",
+            )
+        )
+        items.append(
+            self.canvas.create_oval(
+                cx - s * 0.11, cy - s * 0.39, cx + s * 0.11, cy - s * 0.25,
+                fill=self.HAT, outline="#a88947",
+            )
+        )
+        items.extend(self._scythe_items(cx, cy, angle, s))
         return items
 
-    def _paint_range(self, start, end):
+    def _draw_farmer_top(self, cx, cy, angle=-0.95, walking=False, phase=0.0):
+        s = min(self.cell_px, 88.0)
+        if s < 7:
+            r = max(1.6, s * 0.24)
+            return [
+                self.canvas.create_oval(
+                    cx - r, cy - r, cx + r, cy + r,
+                    fill=self.CURRENT, outline=self.BARN_DARK,
+                )
+            ]
+        items = [
+            self.canvas.create_oval(
+                cx - s * 0.30, cy - s * 0.20, cx + s * 0.30, cy + s * 0.30,
+                fill="#a99772", outline="", stipple="gray50",
+            )
+        ]
+        items.extend(self._scythe_items(cx - s * 0.05, cy + s * 0.02, angle, s))
+        items.append(
+            self.canvas.create_oval(
+                cx - s * 0.16, cy - s * 0.13, cx + s * 0.16, cy + s * 0.17,
+                fill=self.SHIRT, outline="#4e6276", width=max(1, int(s * 0.02)),
+            )
+        )
+        items.append(
+            self.canvas.create_oval(
+                cx - s * 0.18, cy - s * 0.22, cx + s * 0.18, cy - s * 0.12,
+                fill=self.HAT, outline="#a88947",
+            )
+        )
+        items.append(
+            self.canvas.create_oval(
+                cx - s * 0.10, cy - s * 0.27, cx + s * 0.10, cy - s * 0.14,
+                fill=self.HAT, outline="#a88947",
+            )
+        )
+        return items
+
+    def _render_farmer_at(self, cx, cy, angle=-0.95, walking=False, phase=0.0):
+        self._delete_marker()
+        self._farmer_xy = (cx, cy)
+        self.marker_items = self._draw_farmer(cx, cy, angle, walking, phase)
+        for item in self.marker_items:
+            self.canvas.tag_raise(item)
+
+    def _place_farmer(self, cx, cy, animate=False):
+        self._cancel_walk()
+        self._cancel_swing()
+        self._render_farmer_at(cx, cy, -0.95, False, 0.0)
+        if animate:
+            self._start_swing()
+
+    def _start_walk(self, start_xy, end_xy):
+        if self._current_speed() > 100 or self.cell_px < 6:
+            self._place_farmer(*end_xy, animate=True)
+            return
+        sx, sy = start_xy
+        tx, ty = end_xy
+        distance = math.hypot(tx - sx, ty - sy)
+        duration = max(80.0, min(180.0, 80.0 + distance * 0.9))
+        self._cancel_walk()
+        self._cancel_swing()
+        self._walk_token += 1
+        token = self._walk_token
+        start = time.perf_counter()
+
+        def frame():
+            if token != self._walk_token:
+                return
+            t = min(1.0, (time.perf_counter() - start) * 1000.0 / duration)
+            ease = t * t * (3.0 - 2.0 * t)
+            x = sx + (tx - sx) * ease
+            y = sy + (ty - sy) * ease
+            bob = math.sin(t * math.pi) * self.cell_px * 0.035
+            angle = -0.95 + math.sin(t * math.pi) * 0.55
+            self._render_farmer_at(x, y - bob, angle, True, t * math.pi * 2.0)
+            if t < 1.0:
+                self._walk_job = self.root.after(16, frame)
+            else:
+                self._walk_job = None
+                self._place_farmer(tx, ty, animate=True)
+
+        frame()
+
+    def _start_swing(self):
+        if self._farmer_xy is None or self.cell_px < 7:
+            return
+        self._cancel_swing()
+        self._walk_token += 1
+        token = self._walk_token
+        frames = 5
+        cx, cy = self._farmer_xy
+
+        def step(k):
+            if token != self._walk_token:
+                return
+            if k > frames:
+                self._swing_job = None
+                self._render_farmer_at(cx, cy, -0.95, False, 0.0)
+                return
+            t = k / frames
+            angle = -0.95 + math.sin(t * math.pi) * 1.35
+            self._render_farmer_at(cx, cy, angle, False, 0.0)
+            self._swing_job = self.root.after(26, lambda: step(k + 1))
+
+        step(1)
+
+    def _cancel_walk(self):
+        if self._walk_job is not None:
+            try:
+                self.root.after_cancel(self._walk_job)
+            except tk.TclError:
+                pass
+            self._walk_job = None
+
+    def _cancel_swing(self):
+        if self._swing_job is not None:
+            try:
+                self.root.after_cancel(self._swing_job)
+            except tk.TclError:
+                pass
+            self._swing_job = None
+
+    def _cancel_farmer_anims(self):
+        self._cancel_walk()
+        self._cancel_swing()
+        self._walk_token += 1
+
+    def _spawn_clippings(self, cx, cy):
+        if self.cell_px < 9 or self._current_speed() > 100 or len(self._clip_jobs) >= 4:
+            return
+        pieces = []
+        for _ in range(4):
+            x = cx + random.uniform(-0.24, 0.24) * self.cell_px
+            y = cy + random.uniform(-0.10, 0.16) * self.cell_px
+            vx = random.uniform(-0.55, 0.55) * self.cell_px
+            vy = random.uniform(-1.1, -0.45) * self.cell_px
+            item = self.canvas.create_line(
+                x, y, x + self.cell_px * 0.05, y - self.cell_px * 0.05,
+                fill=random.choice((self.GRASS_LIGHT, self.GRASS_DARK, self.CUT_GRASS)),
+                width=max(1, int(self.cell_px * 0.025)), capstyle="round",
+            )
+            pieces.append((item, x, y, vx, vy))
+        job = {"items": pieces, "start": time.perf_counter(), "id": None}
+        self._clip_jobs.append(job)
+
+        def frame():
+            if job not in self._clip_jobs:
+                return
+            t = min(1.0, (time.perf_counter() - job["start"]) / 0.28)
+            for item, x, y, vx, vy in pieces:
+                nx = x + vx * t
+                ny = y + vy * t + 0.5 * self.cell_px * 3.0 * t * t
+                try:
+                    self.canvas.coords(
+                        item, nx, ny, nx + self.cell_px * 0.05, ny - self.cell_px * 0.04
+                    )
+                except tk.TclError:
+                    return
+            if t < 1.0:
+                job["id"] = self.root.after(16, frame)
+            else:
+                for item, _x, _y, _vx, _vy in pieces:
+                    self.canvas.delete(item)
+                if job in self._clip_jobs:
+                    self._clip_jobs.remove(job)
+
+        frame()
+
+    def _cancel_clipping(self):
+        for job in self._clip_jobs:
+            if job.get("id") is not None:
+                try:
+                    self.root.after_cancel(job["id"])
+                except tk.TclError:
+                    pass
+            for item, _x, _y, _vx, _vy in job["items"]:
+                try:
+                    self.canvas.delete(item)
+                except tk.TclError:
+                    pass
+        self._clip_jobs = []
+
+    def _cut_step(self, index, animate=False):
         if not self.sequence or not self.cell_items:
             return
         total = len(self.sequence)
-        for i in range(max(0, start), min(total, end)):
-            r, c = self.sequence[i]
-            ch = self.maze.grid[r][c]
-            if ch not in "AB":
-                self.canvas.itemconfigure(self.cell_items[r][c], fill=self._gradient_for(i, total))
+        if index >= total:
+            return
+        r, c = self.sequence[index]
+        ch = self.maze.grid[r][c]
+        if ch != "1":
+            return
+        count = self.cut_counts.get((r, c), 0)
+        self.cut_counts[(r, c)] = count + 1
+        if count == 0:
+            self._apply_cut_visual(r, c, index, total)
+            if animate:
+                self._spawn_clippings(*self._sprite_center(r, c))
+
+    def _uncut_step(self, index):
+        if not self.sequence or not self.cell_items:
+            return
+        total = len(self.sequence)
+        if index >= total:
+            return
+        r, c = self.sequence[index]
+        ch = self.maze.grid[r][c]
+        if ch != "1":
+            return
+        count = self.cut_counts.get((r, c), 0)
+        if count <= 1:
+            self.cut_counts.pop((r, c), None)
+            item = self.cell_items[r][c]
+            if item is not None:
+                self.canvas.itemconfigure(item, fill=self.FLOOR)
+            self._set_grass_visible(r, c, True)
+        else:
+            self.cut_counts[(r, c)] = count - 1
 
     def _delete_marker(self):
         for item in self.marker_items:
-            self.canvas.delete(item)
+            try:
+                self.canvas.delete(item)
+            except tk.TclError:
+                pass
         self.marker_items = []
 
     def _delete_trail(self):
         for item in self.trail_items:
-            self.canvas.delete(item)
+            try:
+                self.canvas.delete(item)
+            except tk.TclError:
+                pass
         self.trail_items = []
 
     def _clear_overlay(self):
-        if self.cell_items and self.sequence and self.maze:
-            for i in range(min(self.index, len(self.sequence))):
-                r, c = self.sequence[i]
-                ch = self.maze.grid[r][c]
-                if ch not in "AB":
-                    self.canvas.itemconfigure(self.cell_items[r][c], fill=self._base_color(ch))
+        self._cancel_farmer_anims()
+        self._cancel_clipping()
+        if self.cell_items and self.maze:
+            for r, c in list(self.cut_counts):
+                item = self.cell_items[r][c]
+                if item is not None:
+                    self.canvas.itemconfigure(item, fill=self.FLOOR)
+                self._set_grass_visible(r, c, True)
+        self.cut_counts = {}
+        self._cut_prefix = {}
         self._delete_marker()
         self._delete_trail()
+        self._farmer_xy = None
         self.index = 0
         if hasattr(self, "progress"):
             self._update_progress()
 
-    def _update_marker_and_trail(self):
-        if not self.sequence or self.index <= 0 or not self.cell_items:
+    def _update_marker_and_trail(self, animate=True):
+        self._delete_trail()
+        if not self.cell_items or not self.maze:
             self._delete_marker()
-            self._delete_trail()
             return
 
-        r, c = self.sequence[self.index - 1]
-        cx, cy = self._sprite_center(r, c)
-        self._delete_marker()
-        self.marker_items = self._draw_ufo_marker(cx, cy)
-
-        if self.current_kind in PATH_KINDS and self.index >= 2:
+        if self.current_kind in PATH_KINDS and self.sequence and self.index >= 2:
             points = []
             for rr, cc in self.sequence[: self.index]:
                 xx0, yy0, xx1, yy1 = self._cell_rect(rr, cc)
                 points.extend(((xx0 + xx1) / 2.0, (yy0 + yy1) / 2.0))
-            trail_width = max(2.0, min(6.0, self.cell_px * 0.25))
+            trail_width = max(1.4, min(3.6, self.cell_px * 0.16))
             trail_layers = (
-                (trail_width * 2.8, "#2c2a26"),
-                (trail_width * 1.7, self.TRAIL),
-                (trail_width * 0.7, "#f0e6d8"),
+                (trail_width * 2.3, "#9d8a5a"),
+                (trail_width * 1.4, self.TRAIL),
+                (trail_width * 0.55, "#f2e7c8"),
             )
-            if not self.trail_items:
-                for width, color in trail_layers:
-                    self.trail_items.append(
-                        self.canvas.create_line(
-                            *points,
-                            fill=color,
-                            width=width,
-                            capstyle="round",
-                            joinstyle="round",
-                        )
+            for width, color in trail_layers:
+                self.trail_items.append(
+                    self.canvas.create_line(
+                        *points, fill=color, width=width,
+                        capstyle="round", joinstyle="round",
                     )
-            else:
-                for item, (width, color) in zip(self.trail_items, trail_layers):
-                    self.canvas.coords(item, *points)
-                    self.canvas.itemconfigure(item, width=width, fill=color)
-        else:
-            self._delete_trail()
+                )
 
-        for item in self.marker_items:
-            self.canvas.tag_raise(item)
+        if self.sequence and self.index > 0:
+            r, c = self.sequence[self.index - 1]
+        elif self.maze.root:
+            r, c = self.maze.root
+        else:
+            self._delete_marker()
+            return
+
+        cx, cy = self._sprite_center(r, c)
+        if (animate and self.current_kind in PATH_KINDS and self.sequence
+                and self.index >= 2 and self._farmer_xy is not None):
+            distance = math.hypot(cx - self._farmer_xy[0], cy - self._farmer_xy[1])
+            if distance > 2.0:
+                self._start_walk(self._farmer_xy, (cx, cy))
+            else:
+                self._place_farmer(cx, cy, animate=True)
+        else:
+            self._place_farmer(cx, cy, animate=animate)
+
+
+    def _save_view_state(self):
+        state = self.view_states[self.view_mode]
+        state["zoom"] = self.zoom
+        state["auto_fit"] = self.auto_fit
+        state["base_cell"] = self.base_cell
+        try:
+            state["xview"] = self.canvas.xview()[0]
+            state["yview"] = self.canvas.yview()[0]
+        except tk.TclError:
+            state["xview"] = state["yview"] = 0.0
+
+    def _load_view_state(self):
+        state = self.view_states[self.view_mode]
+        self.zoom = state["zoom"]
+        self.auto_fit = state["auto_fit"]
+        self.base_cell = state["base_cell"]
+
+    def _reset_view_states(self):
+        for state in self.view_states.values():
+            state.update(zoom=1.0, auto_fit=True, base_cell=4.0, xview=0.0, yview=0.0)
+        self._load_view_state()
+
+    def _switch_view(self, mode):
+        if mode not in self.view_states or mode == self.view_mode:
+            return
+        self._save_view_state()
+        self._cancel_farmer_anims()
+        self.view_mode = mode
+        self._load_view_state()
+        self._update_view_buttons()
+        self._update_zoom_label()
+        self.redraw()
+        state = self.view_states[mode]
+        self.canvas.xview_moveto(state["xview"])
+        self.canvas.yview_moveto(state["yview"])
+
+    def _update_view_buttons(self):
+        if not hasattr(self, "view_iso_btn"):
+            return
+        self.view_iso_btn.set_selected(self.view_mode == "iso")
+        self.view_top_btn.set_selected(self.view_mode == "top")
 
     # ------------------------------------------------------------ navegación --
     def fit_view(self):
@@ -2238,12 +2881,8 @@ class MazeGui:
 
     def _on_close(self):
         self._stop_playback()
-        if self._star_job is not None:
-            try:
-                self.root.after_cancel(self._star_job)
-            except tk.TclError:
-                pass
-            self._star_job = None
+        self._cancel_farmer_anims()
+        self._cancel_clipping()
         for temp_dir in self.temp_dirs:
             shutil.rmtree(temp_dir, ignore_errors=True)
         self.temp_dirs = []

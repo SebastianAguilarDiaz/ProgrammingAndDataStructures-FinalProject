@@ -1,4 +1,4 @@
-# Contexto del proyecto — MazeView / Resolvedor de laberintos
+# Contexto del proyecto — Maze / Granjero en el laberinto
 
 Este documento es el contexto de referencia para cualquier IA o persona que trabaje en el
 repositorio. **Debe actualizarse cada vez que se modifique el código, los formatos o el
@@ -12,13 +12,14 @@ matrices de caracteres. Tiene dos piezas:
 1. **`maze.cpp`** (núcleo en C++): lee un laberinto `.in`, construye dos árboles de búsqueda
    (DFS y BFS), calcula recorridos y escribe archivos `.sol` con las secuencias de nodos.
 2. **`maze_gui.py`** (interfaz en Python/Tkinter): carga el `.in`, ejecuta `a.exe`, lee los
-   `.sol` y los dibuja/anima con un tema oscuro.
+   `.sol` y los dibuja/anima como un campo de granja: el granjero `A` corta pasto con su
+   guadaña hasta llegar al granero `B`.
 
 No hay backend, base de datos ni dependencias externas de Python. Todo es local.
 
-- Rama actual de desarrollo: `GUI`
+- Rama actual de desarrollo: `fieldGUI`
 - Remoto: `https://github.com/SebastianAguilarDiaz/ProgrammingAndDataStructures-FinalProject`
-- Último commit conocido: `8762602 First gui version`
+- Último commit conocido: `b3c2229 Spacial GUI`
 - Sistema objetivo: Windows (PowerShell); el código C++ y la GUI también son portables.
 
 ## 2. Archivos del repositorio
@@ -166,11 +167,15 @@ Para una entrada `X.in`, `file_name = ruta sin los últimos 3 caracteres` (norma
 
 ### Configuración y constantes
 
-- `APP_NAME = "MazeView"`, subtítulo y estilos en la clase `MazeGui` (`maze_gui.py:295`).
+- `APP_NAME = "Maze"`, subtítulo «El granjero, su guadaña y el camino al granero» y paleta de
+  campo claro definida en la clase `MazeGui`.
 - `TICK_MS = 40`, `SOLVER_TIMEOUT = 120` s, `SPEED_VALUES = [1, 2, 5, 10, 25, 50, 100, 250, 1000]`.
-- `KINDS` (`maze_gui.py:33`) define las cinco salidas: clave del `.sol`, etiqueta, grupo
-  (`tree` o `path`) y descripción.
-- `PATH_KINDS = {"dfs_solution", "bfs_solution"}`: solo estas dibujan la línea de ruta.
+- `KINDS` define las cinco salidas: Preorden, Postorden y BFS por niveles (`tree`), más Ruta DFS
+  y Ruta BFS (`path`), con descripciones temáticas de granja.
+- `PATH_KINDS = {"dfs_solution", "bfs_solution"}`: solo estas invierten la secuencia para
+  mostrarla de `A` a `B`, dibujan la estela y usan caminata suave.
+- `RoundedButton`, `RoundedCard` y `KindRow` son widgets basados en `Canvas`; no usar `ttk`
+  para botones ni tarjetas nuevas.
 
 ### Flujo principal
 
@@ -196,43 +201,50 @@ Para una entrada `X.in`, `file_name = ruta sin los últimos 3 caracteres` (norma
 
 ### Interfaz y animación
 
-- Ventana mínima 1040×640, tema espacial profundo con paleta desaturada, layout: header (título,
-  selector de `.in`, Abrir, Regenerar), canvas del laberinto con scroll/zoom + leyenda, panel
-  derecho con tarjetas «Sector», «Ruta de vuelo» y «Bitácora de vuelo».
-- Fondo de espacio profundo (`_draw_space`): tres nebulosas suaves con `stipple`, campo de
-  estrellas aleatorio y destellos; `_twinkle_stars` parpadea estrellas cada 260–720 ms. El job
-  `_star_job` se cancela al cerrar la ventana.
-- **Laberinto isométrico 3D**: cada celda se dibuja como un rombo. Las celdas de camino usan un
-  rombo exterior oscuro + interior con margen; las paredes son prismas con cara superior y dos
-  caras laterales (`WALL`, `WALL_SIDE_LIGHT`, `WALL_SIDE_DARK`). Todo el tablero flota sobre una
-  plataforma con grosor y sombra. El orden de dibujo es por profundidad (`fila + columna`), de
-  atrás hacia adelante. Las caras laterales se omiten cuando el vecino `(fila+1, col)` o
+- Ventana mínima 1040×640, paleta de campo crema/verde, layout: header (título, selector de
+  `.in`, Abrir campo, Regenerar), canvas del campo con scroll/zoom + leyenda, y panel derecho con
+  tarjetas «Campo», «Ruta de cosecha» y «Registro de corte». Arriba del canvas hay un selector
+  **3D / 2D**.
+- Fondo de campo (`_draw_backdrop`): cielo degradado, sol, nubes suaves, colinas y franjas de
+  cultivo. No hay estrellas ni jobs de parpadeo.
+- **Vista 3D isométrica** (`_redraw_iso`): cada celda es un rombo; los muros son prismas de
+  piedra con cara superior, musgo y dos caras laterales; el tablero descansa sobre una
+  plataforma con grosor. El orden de dibujo es por profundidad (`fila + columna`), de atrás
+  hacia adelante. Las caras laterales se omiten cuando el vecino `(fila+1, col)` o
   `(fila, col+1)` también es muro.
+- **Vista 2D cenital** (`_redraw_top`): cuadrícula limpia de campo, muros de piedra, pasto y
+  sendero. Es la vista preferida para laberintos grandes.
 - Para laberintos grandes se simplifica el dibujo: si `cell_px < 9.5` las celdas de camino se
-  pintan como rombos planos sin margen; si `cell_px < 7.5` los muros omiten las caras laterales.
-  Esto evita moiré y mantiene fluida la vista de 100×100.
-- Paleta: muro `#26384a` (caras `#1a2836` / `#111c27`), camino `#466a78`, `A` verde salvia
-  `#8fbfa8`, `B` rosa empolvado `#c08b9a`, desconocido `#4b4f5e`, rejilla `#223846`, acento
-  `#8fc2cc`, estela arena `#cfa77f`. Sin colores neón.
-- `A` se dibuja como OVNI/nave (`_draw_ship`) y `B` como planeta anillado (`_draw_planet`),
-  ambos en su profundidad isométrica (las celdas frontales pueden ocultarlos parcialmente). El
-  nodo actual se marca con un mini OVNI (`_draw_ufo_marker`) siempre por encima del tablero.
-- Al visitar celdas se rellenan con un degradado suave verde-azulado → azul → malva
-  (`GRADIENT_STOPS`); en las soluciones se dibuja una estela de capas arena/crema.
+  pintan planas; si `cell_px < 7.5` los muros omiten las caras laterales. Esto evita moiré y
+  mantiene fluida la vista de 100×100.
+- Paleta principal: panel `#fbf7ea`, tarjeta `#fffdf6`, texto `#33402c`, acento `#6e8f57`,
+  muro `#8d897b` (caras `#726e61` / `#5a574d`), pasto `#6e9a4a`, pasto alto `#83ad58` /
+  `#5c8740`, pasto cortado `#d6c58c`, sendero `#dccb93`, granero `#a94f3c` / `#704235`,
+  granjero con camisa `#6f89a0` y sombrero `#d9b86c`.
+- `A` se dibuja como el granjero con guadaña (`_draw_farmer`) y `B` como granero
+  (`_draw_barn_iso` / `_draw_barn_top`), en su profundidad isométrica. El nodo actual se marca
+  con el granjero y una pequeña sombra; no se dibujan etiquetas numéricas.
+- Al avanzar se corta el pasto: las celdas pasan de verde a un degradado verde pajizo → paja
+  (`GRADIENT_STOPS`), se ocultan las briznas de pasto y se generan recortes. En soluciones se
+  dibuja una estela de capas arena/crema.
+- Las soluciones `.sol` vienen de `B` a `A`; la GUI las invierte **solo para visualizarlas** de
+  `A` a `B`. En secuencias de camino, si dos celdas son adyacentes, el granjero camina y gira la
+  guadaña; en preorden/postorden/BFS salta entre nodos no adyacentes.
 - Coordenadas isométricas: `cx = ox + (col - fila) * tw / 2`, `cy = oy + (col + fila) * tw / 4`;
-  `_cell_rect` devuelve el rectángulo envolvente del rombo y `_sprite_center` su centro. `auto_fit`
-  reserva espacio para la plataforma y el zoom se aplica sobre el ancho de baldosa (`cell_px`).
-- **No hay etiquetas numéricas sobre las celdas**: el avance se muestra solo por el llenado de
-  colores y el OVNI actual. La lista «Bitácora de vuelo» del panel derecho sí conserva sus pasos.
+  `_cell_rect` devuelve el rectángulo envolvente de la celda según la vista y `_sprite_center` su
+  centro. `auto_fit` reserva espacio para la plataforma y el zoom se aplica sobre `cell_px`.
 - Controles: anterior/siguiente, Reproducir/Pausa, Reiniciar, Ver todo, slider de velocidad,
-  barra de progreso, lista de nodos (clic para saltar).
+  barra de progreso y lista de nodos (clic para saltar).
 - La velocidad se aplica con un acumulador entero (`_step_accum`): cada tick de `TICK_MS`
   suma `velocidad × TICK_MS` y avanza un nodo por cada 1000 unidades. Así los valores bajos
   (1, 2, 5…) también se respetan y el slider afecta la animación en curso.
 - Zoom con rueda del ratón y botones `−` / `+` / `Ajustar`; `auto_fit` recalcula la celda al
-  redimensionar. El panel derecho tiene su propio scroll.
-- `temp_dirs` y el job de estrellas `_star_job` se limpian al cerrar la ventana
-  (`WM_DELETE_WINDOW`).
+  redimensionar. El panel derecho tiene su propio scroll. Cada vista conserva su zoom y scroll
+  (`_save_view_state` / `_load_view_state`), y la vista inicial es 3D.
+- Rendimiento: `_prepare_cut_state`, `_cut_prefix` y `_cell_fill` evitan recorrer toda la
+  secuencia al redibujar; `set_index` y `reset_animation` hacen redibujado masivo cuando el salto
+  supera 500 pasos en secuencias de más de 1500. Con esto, 100×100 se mantiene fluido.
+- `temp_dirs` se limpia al cerrar la ventana (`WM_DELETE_WINDOW`).
 
 ### Detalles a tener en cuenta
 
