@@ -14,6 +14,7 @@ from __future__ import annotations
 import ctypes
 import glob
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -23,7 +24,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 APP_NAME = "MazeView"
-APP_SUBTITLE = "Visualizador de laberintos · recorridos DFS / BFS"
+APP_SUBTITLE = "Misión espacial · la nave debe alcanzar su planeta"
 PAD = 24
 TICK_MS = 40
 SOLVER_TIMEOUT = 120
@@ -31,11 +32,11 @@ SPEED_VALUES = [1, 2, 5, 10, 25, 50, 100, 250, 1000]
 
 # (clave del archivo .sol, etiqueta, grupo, descripción)
 KINDS = [
-    ("preorder", "Preorden", "tree", "Preorden del árbol DFS desde A."),
-    ("postorder", "Postorden", "tree", "Postorden del árbol DFS (hijos → raíz)."),
-    ("bfs", "BFS por niveles", "tree", "BFS: nivel por nivel desde A."),
-    ("dfs_solution", "Solución DFS", "path", "Ruta de B a A con el árbol DFS."),
-    ("bfs_solution", "Solución BFS", "path", "Ruta de B a A con el árbol BFS."),
+    ("preorder", "Preorden", "tree", "Barrido DFS del sector desde la nave A."),
+    ("postorder", "Postorden", "tree", "Barrido DFS: zonas internas antes que la nave."),
+    ("bfs", "BFS por niveles", "tree", "Exploración BFS: anillos de distancia desde A."),
+    ("dfs_solution", "Solución DFS", "path", "Trayectoria planeta B → nave A con el árbol DFS."),
+    ("bfs_solution", "Solución BFS", "path", "Trayectoria planeta B → nave A con el árbol BFS."),
 ]
 KIND_LABEL = {key: label for key, label, _, _ in KINDS}
 KIND_DESC = {key: desc for key, _, _, desc in KINDS}
@@ -220,6 +221,20 @@ def _hex(rgb):
     return "#{:02x}{:02x}{:02x}".format(*rgb)
 
 
+def _build_gradient(stops, count=128):
+    """Genera una rampa interpolando una lista de paradas (t, rgb)."""
+    result = []
+    for i in range(count):
+        t = i / (count - 1) if count > 1 else 0.0
+        for (t0, c0), (t1, c1) in zip(stops, stops[1:]):
+            if t <= t1:
+                span = t1 - t0
+                local = 0.0 if span <= 0 else (t - t0) / span
+                result.append(_hex(_mix(c0, c1, max(0.0, min(1.0, local)))))
+                break
+    return result
+
+
 class KindRow(tk.Frame):
     """Fila seleccionable con un punto de color para elegir recorrido."""
 
@@ -293,31 +308,39 @@ class KindRow(tk.Frame):
 
 
 class MazeGui:
-    BG = "#0a0f19"
-    PANEL = "#111827"
-    CARD = "#161f31"
-    CARD_ALT = "#1b2639"
-    CARD_HOVER = "#223048"
-    CARD_SEL = "#103b39"
-    BORDER = "#2a3852"
-    TEXT = "#e7eefb"
-    MUTED = "#93a4c0"
-    DISABLED = "#5b6b85"
-    ACCENT = "#2dd4bf"
-    ACCENT_DARK = "#0f766e"
-    WARN = "#fbbf24"
-    DANGER = "#f87171"
-    CANVAS_BG = "#070b12"
-    WALL = "#121a29"
-    FLOOR = "#2c3e5c"
-    ROOT_COLOR = "#22c55e"
-    TARGET_COLOR = "#ef4444"
-    UNKNOWN = "#6b7280"
-    GRID = "#0b1220"
-    CURRENT = "#fbbf24"
-    TRAIL = "#f59e0b"
-    VISITED_A = (14, 116, 144)
-    VISITED_B = (126, 34, 206)
+    BG = "#0b111b"
+    PANEL = "#101927"
+    CARD = "#141f2e"
+    CARD_ALT = "#1a2839"
+    CARD_HOVER = "#223447"
+    CARD_SEL = "#203842"
+    BORDER = "#2b4051"
+    TEXT = "#e6edf4"
+    MUTED = "#95a7b9"
+    DISABLED = "#56687a"
+    ACCENT = "#8fc2cc"
+    ACCENT_DARK = "#4c7884"
+    WARN = "#d8b47a"
+    DANGER = "#c9828d"
+    CANVAS_BG = "#070c14"
+    WALL = "#26384a"
+    WALL_SIDE_LIGHT = "#1a2836"
+    WALL_SIDE_DARK = "#111c27"
+    FLOOR = "#466a78"
+    ROOT_COLOR = "#8fbfa8"
+    TARGET_COLOR = "#c08b9a"
+    UNKNOWN = "#4b4f5e"
+    GRID = "#223846"
+    CURRENT = "#d9c7a0"
+    TRAIL = "#cfa77f"
+    GRADIENT_STOPS = (
+        (0.00, (92, 150, 164)),
+        (0.35, (104, 138, 174)),
+        (0.68, (133, 132, 174)),
+        (1.00, (158, 128, 152)),
+    )
+    STAR_COLORS = ("#dfe9f4", "#c3d7ea", "#e3d8c5", "#c8c4db")
+    NEBULA_COLORS = ("#0d1521", "#0f1725", "#101a28", "#0b151e")
 
     def __init__(self, root, initial_file=None):
         self.root = root
@@ -340,18 +363,18 @@ class MazeGui:
         self.ox = 0.0
         self.oy = 0.0
         self.cell_items = []
-        self.marker_item = None
-        self.trail_item = None
-        self.order_labels = []
+        self.marker_items = []
+        self.trail_items = []
         self.solver_issues = []
         self.log = ""
         self.temp_dirs = []
         self._resize_job = None
         self._updating_list = False
+        self._step_accum = 0
+        self.star_items = []
+        self._star_job = None
 
-        self.gradient = [
-            _hex(_mix(self.VISITED_A, self.VISITED_B, i / 127.0)) for i in range(128)
-        ]
+        self.gradient = _build_gradient(self.GRADIENT_STOPS)
 
         self._setup_fonts()
         self._setup_root()
@@ -364,6 +387,7 @@ class MazeGui:
         self._update_progress()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._star_job = self.root.after(700, self._twinkle_stars)
         if initial_file:
             self.root.after(150, lambda: self.load_path(initial_file))
         else:
@@ -462,11 +486,11 @@ class MazeGui:
         )
         style.configure(
             "Accent.Horizontal.TProgressbar",
-            background="#3b82f6",
+            background=self.ACCENT,
             troughcolor=self.CANVAS_BG,
             bordercolor=self.BORDER,
-            lightcolor="#3b82f6",
-            darkcolor="#3b82f6",
+            lightcolor=self.ACCENT,
+            darkcolor=self.ACCENT_DARK,
         )
         style.configure(
             "Accent.Horizontal.TScale",
@@ -484,7 +508,7 @@ class MazeGui:
     # ------------------------------------------------------------------ UI --
     def _flat_button(self, parent, text, command, kind="secondary", small=False, **kwargs):
         if kind == "primary":
-            bg, fg, hover = self.ACCENT, "#04211d", "#5eead4"
+            bg, fg, hover = self.ACCENT, "#102026", "#a9d6df"
         else:
             bg, fg, hover = self.CARD_ALT, self.TEXT, self.CARD_HOVER
         button = tk.Button(
@@ -566,10 +590,10 @@ class MazeGui:
         return label
 
     def _build_ui(self):
-        self.file_var = tk.StringVar(value="Ningún archivo seleccionado")
-        self.status_var = tk.StringVar(value="Abre un laberinto .in para comenzar.")
+        self.file_var = tk.StringVar(value="Ningún sector seleccionado")
+        self.status_var = tk.StringVar(value="Abre un sector .in para iniciar la misión.")
         self.zoom_var = tk.StringVar(value="100 %")
-        self.desc_var = tk.StringVar(value="Elige un recorrido disponible.")
+        self.desc_var = tk.StringVar(value="Elige una ruta de vuelo disponible.")
         self.warn_var = tk.StringVar(value="Sin advertencias.")
         self.step_var = tk.StringVar(value="—")
         self.speed_label_var = tk.StringVar(value="10 pasos/s")
@@ -602,7 +626,7 @@ class MazeGui:
         controls = tk.Frame(header_inner, bg=self.PANEL)
         controls.grid(row=0, column=1, sticky="e")
         tk.Label(
-            controls, text="Laberintos:", bg=self.PANEL, fg=self.MUTED, font=self.font_small
+            controls, text="Sectores:", bg=self.PANEL, fg=self.MUTED, font=self.font_small
         ).pack(side="left", padx=(0, 6))
         self.quick_combo = ttk.Combobox(
             controls,
@@ -658,13 +682,13 @@ class MazeGui:
 
         toolbar = tk.Frame(left, bg=self.BG)
         toolbar.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        self._legend_chip(toolbar, self.WALL, "Pared")
-        self._legend_chip(toolbar, self.FLOOR, "Camino")
-        self._legend_chip(toolbar, self.ROOT_COLOR, "A (origen)")
-        self._legend_chip(toolbar, self.TARGET_COLOR, "B (destino)")
-        self._legend_chip(toolbar, self.gradient[80], "Visitado")
-        self._legend_chip(toolbar, self.CURRENT, "Actual")
-        self._legend_chip(toolbar, self.TRAIL, "Ruta")
+        self._legend_chip(toolbar, self.WALL, "Muro")
+        self._legend_chip(toolbar, self.FLOOR, "Espacio libre")
+        self._legend_chip(toolbar, self.ROOT_COLOR, "Nave A")
+        self._legend_chip(toolbar, self.TARGET_COLOR, "Planeta B")
+        self._legend_chip(toolbar, self.gradient[80], "Explorado")
+        self._legend_chip(toolbar, self.CURRENT, "Sonda")
+        self._legend_chip(toolbar, self.TRAIL, "Estela")
 
         zoom_box = tk.Frame(toolbar, bg=self.BG)
         zoom_box.pack(side="right")
@@ -700,7 +724,7 @@ class MazeGui:
         self.right_canvas.bind("<Configure>", self._on_right_canvas_configure)
 
         # Tarjeta de información
-        info_card, info_body, info_head = self._make_card(right, "Laberinto")
+        info_card, info_body, info_head = self._make_card(right, "Sector")
         info_card.pack(fill="x", pady=(0, 10))
         self.details_btn = self._flat_button(
             info_head, "Detalles", self.show_details, small=True
@@ -715,9 +739,9 @@ class MazeGui:
         }
         rows = [
             ("Dimensiones", "dims"),
-            ("Origen A", "root"),
-            ("Destino B", "target"),
-            ("Celdas de camino", "paths"),
+            ("Nave A", "root"),
+            ("Planeta B", "target"),
+            ("Celdas libres", "paths"),
         ]
         for idx, (text, key) in enumerate(rows):
             tk.Label(
@@ -745,10 +769,10 @@ class MazeGui:
         self.warn_lbl.grid(row=len(rows), column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         # Tarjeta de recorridos
-        trav_card, trav_body, _ = self._make_card(right, "Recorrido")
+        trav_card, trav_body, _ = self._make_card(right, "Ruta de vuelo")
         trav_card.pack(fill="x", pady=(0, 10))
 
-        self._group_label(trav_body, "RECORRIDOS DEL ÁRBOL")
+        self._group_label(trav_body, "SONDEO DEL SECTOR")
         self.kind_rows = {}
         for key, label, group, _desc in KINDS:
             if group != "tree":
@@ -759,7 +783,7 @@ class MazeGui:
 
         separator = tk.Frame(trav_body, bg=self.BORDER, height=1)
         separator.pack(fill="x", pady=(6, 0))
-        self._group_label(trav_body, "RUTAS DE B A A")
+        self._group_label(trav_body, "TRAYECTORIA PLANETA ↔ NAVE")
         for key, label, group, _desc in KINDS:
             if group != "path":
                 continue
@@ -837,14 +861,14 @@ class MazeGui:
         ).pack(fill="x")
 
         # Tarjeta de orden de nodos
-        order_card, order_body, _ = self._make_card(right, "Orden de nodos")
+        order_card, order_body, _ = self._make_card(right, "Bitácora de vuelo")
         order_card.pack(fill="x")
         self.order_card = order_card
         order_body.grid_rowconfigure(1, weight=1)
         order_body.grid_columnconfigure(0, weight=1)
         tk.Label(
             order_body,
-            text="Paso  ·  (fila, col)   —   clic para saltar",
+            text="Registro  ·  (fila, col)   —   clic para saltar",
             bg=self.CARD,
             fg=self.MUTED,
             font=self.font_small,
@@ -854,7 +878,7 @@ class MazeGui:
             order_body,
             bg=self.CANVAS_BG,
             fg=self.TEXT,
-            selectbackground="#1d4ed8",
+            selectbackground=self.ACCENT_DARK,
             selectforeground="#ffffff",
             activestyle="none",
             exportselection=False,
@@ -918,9 +942,9 @@ class MazeGui:
         self.quick_combo.configure(values=self._bundled_files())
         path = filedialog.askopenfilename(
             parent=self.root,
-            title="Selecciona un laberinto (.in)",
+            title="Selecciona un sector (.in)",
             initialdir=self.base_dir,
-            filetypes=[("Laberintos", "*.in"), ("Todos los archivos", "*.*")],
+            filetypes=[("Sectores", "*.in"), ("Todos los archivos", "*.*")],
         )
         if path:
             self.load_path(path)
@@ -960,7 +984,7 @@ class MazeGui:
         self._set_controls_enabled(False)
         self._update_progress()
         self.redraw()
-        self.set_status("Laberinto cargado. Ejecutando a.exe…", "info")
+        self.set_status("Sector cargado. Ejecutando a.exe…", "info")
         self.root.after(60, self.run_solver)
 
     def _update_quick_combo(self):
@@ -1287,7 +1311,7 @@ class MazeGui:
                 parts.append("B: fila {}, col {}".format(*self.maze.target))
             else:
                 parts.append("B: no encontrada")
-            parts.append("Celdas de camino ('1'): {}".format(self.maze.path_cells))
+            parts.append("Celdas libres ('1'): {}".format(self.maze.path_cells))
             if self.maze.warnings:
                 parts.append("\nAdvertencias del archivo:")
                 parts.extend("- {}".format(w) for w in self.maze.warnings)
@@ -1366,6 +1390,7 @@ class MazeGui:
         if self.index >= len(self.sequence):
             self.set_index(0)
         self.playing = True
+        self._step_accum = 0
         self.btn_play.configure(text="Pausa")
         self.set_status(
             "Reproduciendo {} ({} nodos)…".format(
@@ -1386,8 +1411,11 @@ class MazeGui:
         if self.index >= total:
             self._finish_playback()
             return
-        steps = max(1, round(self._current_speed() * TICK_MS / 1000.0))
-        self.set_index(min(total, self.index + steps))
+        self._step_accum += self._current_speed() * TICK_MS
+        steps = self._step_accum // 1000
+        if steps > 0:
+            self._step_accum %= 1000
+            self.set_index(min(total, self.index + steps))
         if self.index >= total:
             self._finish_playback()
         else:
@@ -1476,10 +1504,7 @@ class MazeGui:
                 ch = self.maze.grid[r][c]
                 if ch not in "AB":
                     self.canvas.itemconfigure(self.cell_items[r][c], fill=self._base_color(ch))
-            self._clear_labels()
             self.index = target
-            if self._labels_enabled():
-                self._add_labels(0, target)
         else:
             self._paint_range(self.index, target)
             self.index = target
@@ -1519,7 +1544,7 @@ class MazeGui:
 
     def _set_controls_enabled(self, enabled):
         state = "normal" if enabled else "disabled"
-        disabled_bg = "#1a2434"
+        disabled_bg = "#0b1422"
         for button in (self.btn_prev, self.btn_play, self.btn_next, self.btn_reset, self.btn_full):
             button.configure(
                 state=state,
@@ -1557,9 +1582,10 @@ class MazeGui:
         }.get(ch, self.UNKNOWN)
 
     def _cell_rect(self, row, col):
-        x = self.ox + col * self.cell_px
-        y = self.oy + row * self.cell_px
-        return x, y, x + self.cell_px, y + self.cell_px
+        tw = self.cell_px
+        cx = self.ox + (col - row) * tw * 0.5
+        cy = self.oy + (col + row) * tw * 0.25
+        return cx - tw * 0.5, cy - tw * 0.25, cx + tw * 0.5, cy + tw * 0.25
 
     def _gradient_for(self, step, total):
         if total <= 1:
@@ -1567,27 +1593,94 @@ class MazeGui:
         idx = int(127 * step / (total - 1))
         return self.gradient[max(0, min(127, idx))]
 
-    def _labels_enabled(self):
-        return self.cell_px >= 24 and len(self.sequence) <= 500
+    def _draw_space(self, width, height):
+        """Fondo de espacio profundo: nebulosas, estrellas y destellos."""
+        self.star_items = []
+
+        for _ in range(3):
+            cx = random.uniform(0, width)
+            cy = random.uniform(0, height)
+            rx = random.uniform(width * 0.12, width * 0.32)
+            ry = random.uniform(height * 0.10, height * 0.26)
+            self.canvas.create_oval(
+                cx - rx,
+                cy - ry,
+                cx + rx,
+                cy + ry,
+                fill=random.choice(self.NEBULA_COLORS),
+                outline="",
+                stipple="gray12",
+            )
+
+        count = max(40, min(260, int(width * height / 5600)))
+        for _ in range(count):
+            x = random.uniform(0, width)
+            y = random.uniform(0, height)
+            radius = random.choice((0.55, 0.75, 1.0, 1.35, 1.8))
+            color = random.choice(self.STAR_COLORS)
+            self.star_items.append(
+                self.canvas.create_oval(
+                    x - radius,
+                    y - radius,
+                    x + radius,
+                    y + radius,
+                    fill=color,
+                    outline="",
+                )
+            )
+
+        for _ in range(max(3, count // 45)):
+            x = random.uniform(0, width)
+            y = random.uniform(0, height)
+            radius = random.uniform(1.5, 2.5)
+            self.canvas.create_oval(
+                x - radius * 2.6,
+                y - radius * 2.6,
+                x + radius * 2.6,
+                y + radius * 2.6,
+                fill="#101b2c",
+                outline="",
+            )
+            self.star_items.append(
+                self.canvas.create_oval(
+                    x - radius,
+                    y - radius,
+                    x + radius,
+                    y + radius,
+                    fill="#ffffff",
+                    outline="",
+                )
+            )
+
+    def _twinkle_stars(self):
+        self._star_job = None
+        if self.star_items:
+            for item in random.sample(self.star_items, min(8, len(self.star_items))):
+                try:
+                    self.canvas.itemconfigure(item, fill=random.choice(self.STAR_COLORS))
+                except tk.TclError:
+                    pass
+        self._star_job = self.root.after(random.randint(260, 720), self._twinkle_stars)
 
     def redraw(self):
         self.canvas.delete("all")
         self.cell_items = []
-        self.marker_item = None
-        self.trail_item = None
-        self.order_labels = []
+        self.marker_items = []
+        self.trail_items = []
 
         width = max(self.canvas.winfo_width(), 240)
         height = max(self.canvas.winfo_height(), 200)
+        self._draw_space(width, height)
 
         if not self.maze:
             self.cell_px = 0
             self.ox = 0
             self.oy = 0
+            self.wall_h = 0
             self.canvas.create_text(
                 width / 2,
                 height / 2,
-                text="Abre un laberinto .in para comenzar",
+                text="Abre un sector .in para iniciar la misión",
                 fill=self.MUTED,
                 font=self.font_placeholder,
                 justify="center",
@@ -1596,115 +1689,451 @@ class MazeGui:
             return
 
         maze = self.maze
+        rows, cols = maze.rows, maze.cols
+        span = rows + cols
+        avail_w = max(40.0, width - 2 * PAD - 52.0)
+        avail_h = max(40.0, height - 2 * PAD - 52.0)
+
         if self.auto_fit:
-            self.base_cell = max(
-                1.4,
-                min(
-                    (width - 2 * PAD) / max(1, maze.cols),
-                    (height - 2 * PAD) / max(1, maze.rows),
-                ),
-            )
-        cell = max(1.4, self.base_cell * self.zoom)
-        self.cell_px = cell
+            fit_w = 2.0 * avail_w / max(1, span)
+            fit_h = avail_h / max(1.0, span / 4.0 + 0.30)
+            self.base_cell = max(2.5, min(fit_w, fit_h))
 
-        total_w = cell * maze.cols
-        total_h = cell * maze.rows
-        self.ox = max(PAD, (width - total_w) / 2.0)
-        self.oy = max(PAD, (height - total_h) / 2.0)
+        tw = max(2.5, self.base_cell * self.zoom)
+        self.cell_px = tw
+        hw, hh = tw * 0.5, tw * 0.25
+        self.wall_h = wall_h = max(1.5, min(tw * 0.30, 26.0))
+        plate_pad = max(5.0, min(26.0, tw * 0.40))
+        plate_depth = max(4.0, wall_h * 0.8)
 
-        outline = self.GRID if cell >= 8 else ""
-        ids = []
-        for r in range(maze.rows):
-            row_ids = []
-            y0 = self.oy + r * cell
-            for c in range(maze.cols):
-                x0 = self.ox + c * cell
-                row_ids.append(
-                    self.canvas.create_rectangle(
-                        x0,
-                        y0,
-                        x0 + cell,
-                        y0 + cell,
-                        fill=self._base_color(maze.grid[r][c]),
-                        outline=outline,
-                        width=1,
-                    )
-                )
-            ids.append(row_ids)
+        content_w = span * hw
+        content_h = span * hh + wall_h
+        margin_x = max(0.0, (width - 2 * PAD - 2 * plate_pad - content_w) / 2.0)
+        margin_y = max(0.0, (height - 2 * PAD - 2 * plate_pad - content_h) / 2.0)
+        self.ox = PAD + plate_pad + margin_x + rows * hw
+        self.oy = PAD + plate_pad + margin_y + hh + wall_h
+
+        left = self.ox - rows * hw - plate_pad
+        right = self.ox + cols * hw + plate_pad
+        top = self.oy - hh - wall_h - plate_pad
+        bottom = self.oy + (rows + cols - 1) * hh + plate_pad
+
+        plate = (
+            self.ox,
+            top,
+            right,
+            self.oy + (cols - 1) * hh,
+            self.ox + (cols - rows) * hw,
+            bottom,
+            left,
+            self.oy + (rows - 1) * hh,
+        )
+        self.canvas.create_polygon(
+            *self._shift_points(plate, 0.0, plate_depth + max(4.0, tw * 0.18)),
+            fill="#040810",
+            outline="",
+        )
+        self.canvas.create_polygon(
+            plate[6],
+            plate[7],
+            plate[4],
+            plate[5],
+            plate[4],
+            plate[5] + plate_depth,
+            plate[6],
+            plate[7] + plate_depth,
+            fill="#0b141d",
+            outline="",
+        )
+        self.canvas.create_polygon(
+            plate[4],
+            plate[5],
+            plate[2],
+            plate[3],
+            plate[2],
+            plate[3] + plate_depth,
+            plate[4],
+            plate[5] + plate_depth,
+            fill="#08111a",
+            outline="",
+        )
+        self.canvas.create_polygon(plate, fill="#101b27", outline=self.BORDER, width=1)
+
+        ids = [[None] * cols for _ in range(rows)]
+        for depth in range(rows + cols - 1):
+            first = max(0, depth - (cols - 1))
+            last = min(rows - 1, depth)
+            for r in range(first, last + 1):
+                c = depth - r
+                ids[r][c] = self._draw_cell(r, c, hw, hh, wall_h, tw)
+                if maze.root == (r, c):
+                    self._draw_ship(r, c)
+                if maze.target == (r, c):
+                    self._draw_planet(r, c)
         self.cell_items = ids
 
-        self.canvas.create_rectangle(
-            self.ox,
-            self.oy,
-            self.ox + total_w,
-            self.oy + total_h,
-            outline=self.BORDER,
-            width=1,
-        )
+        bracket = min(34.0, max(10.0, min(right - left, bottom - top) * 0.12))
+        for cx, cy, sx, sy in ((left, top, 1, 1), (right, top, -1, 1), (left, bottom, 1, -1), (right, bottom, -1, -1)):
+            self.canvas.create_line(
+                cx,
+                cy + sy * bracket,
+                cx,
+                cy,
+                cx + sx * bracket,
+                cy,
+                fill=self.ACCENT_DARK,
+                width=1,
+            )
 
-        scroll_w = max(width, self.ox + total_w + PAD)
-        scroll_h = max(height, self.oy + total_h + PAD)
+        shadow_extent = plate_depth + max(4.0, tw * 0.18)
+        scroll_w = max(width, right + shadow_extent + PAD)
+        scroll_h = max(height, bottom + shadow_extent + PAD)
         self.canvas.configure(scrollregion=(0, 0, scroll_w, scroll_h))
 
         if self.sequence and self.index > 0:
             self._paint_range(0, self.index)
             self._update_marker_and_trail()
 
+    @staticmethod
+    def _shift_points(points, dx, dy):
+        shifted = list(points)
+        for i in range(0, len(shifted), 2):
+            shifted[i] += dx
+            shifted[i + 1] += dy
+        return shifted
+
+    @staticmethod
+    def _is_wall_char(ch):
+        return ch not in "1AB"
+
+    def _draw_cell(self, row, col, hw, hh, wall_h, tw):
+        ch = self.maze.grid[row][col]
+        cx = self.ox + (col - row) * hw
+        cy = self.oy + (col + row) * hh
+
+        if self._is_wall_char(ch):
+            top_y = cy - wall_h
+            wall_color = self.WALL if ch == "0" else self.UNKNOWN
+            if tw < 7.5:
+                return self.canvas.create_polygon(
+                    cx,
+                    top_y - hh,
+                    cx + hw,
+                    top_y,
+                    cx,
+                    top_y + hh,
+                    cx - hw,
+                    top_y,
+                    fill=wall_color,
+                    outline="",
+                )
+            left_covered = row + 1 < self.maze.rows and self._is_wall_char(self.maze.grid[row + 1][col])
+            right_covered = col + 1 < self.maze.cols and self._is_wall_char(self.maze.grid[row][col + 1])
+            if not left_covered:
+                self.canvas.create_polygon(
+                    cx - hw,
+                    top_y,
+                    cx,
+                    top_y + hh,
+                    cx,
+                    cy + hh,
+                    cx - hw,
+                    cy,
+                    fill=self.WALL_SIDE_LIGHT,
+                    outline="",
+                )
+            if not right_covered:
+                self.canvas.create_polygon(
+                    cx,
+                    top_y + hh,
+                    cx + hw,
+                    top_y,
+                    cx + hw,
+                    cy,
+                    cx,
+                    cy + hh,
+                    fill=self.WALL_SIDE_DARK,
+                    outline="",
+                )
+            return self.canvas.create_polygon(
+                cx,
+                top_y - hh,
+                cx + hw,
+                top_y,
+                cx,
+                top_y + hh,
+                cx - hw,
+                top_y,
+                fill=wall_color,
+                outline=self.GRID,
+                width=1,
+            )
+
+        if tw < 9.5:
+            return self.canvas.create_polygon(
+                cx,
+                cy - hh,
+                cx + hw,
+                cy,
+                cx,
+                cy + hh,
+                cx - hw,
+                cy,
+                fill=self._base_color(ch),
+                outline="",
+            )
+
+        inset = max(0.35, min(2.0, tw * 0.06))
+        k = max(0.55, 1.0 - 2.0 * inset / tw)
+        self.canvas.create_polygon(
+            cx,
+            cy - hh,
+            cx + hw,
+            cy,
+            cx,
+            cy + hh,
+            cx - hw,
+            cy,
+            fill="#0b1620",
+            outline=self.GRID,
+            width=1,
+        )
+        return self.canvas.create_polygon(
+            cx,
+            cy - hh * k,
+            cx + hw * k,
+            cy,
+            cx,
+            cy + hh * k,
+            cx - hw * k,
+            cy,
+            fill=self._base_color(ch),
+            outline="",
+        )
+
+
+    def _sprite_center(self, row, col):
+        x0, y0, x1, y1 = self._cell_rect(row, col)
+        return (x0 + x1) / 2.0, (y0 + y1) / 2.0
+
+    def _draw_ship(self, row, col):
+        """Dibuja la nave (origen A) como un pequeño OVNI luminoso."""
+        cx, cy = self._sprite_center(row, col)
+        s = self.cell_px
+        if s < 7:
+            self.canvas.create_oval(
+                cx - s * 0.22,
+                cy - s * 0.22,
+                cx + s * 0.22,
+                cy + s * 0.22,
+                fill=self.ROOT_COLOR,
+                outline="#eef4f8",
+            )
+            return
+
+        self.canvas.create_oval(
+            cx - s * 0.46,
+            cy - s * 0.34,
+            cx + s * 0.46,
+            cy + s * 0.34,
+            outline="#2c4a52",
+            width=max(1, int(s * 0.09)),
+        )
+        self.canvas.create_polygon(
+            cx - s * 0.20,
+            cy + s * 0.16,
+            cx + s * 0.20,
+            cy + s * 0.16,
+            cx + s * 0.11,
+            cy + s * 0.42,
+            cx - s * 0.11,
+            cy + s * 0.42,
+            fill="#233843",
+            outline="",
+            stipple="gray25",
+        )
+        self.canvas.create_oval(
+            cx - s * 0.38,
+            cy - s * 0.13,
+            cx + s * 0.38,
+            cy + s * 0.17,
+            fill="#dfe7ee",
+            outline=self.ROOT_COLOR,
+            width=max(1, int(s * 0.05)),
+        )
+        self.canvas.create_oval(
+            cx - s * 0.16,
+            cy - s * 0.29,
+            cx + s * 0.16,
+            cy + s * 0.03,
+            fill="#9fc9bc",
+            outline="#eef4f8",
+        )
+        for dx, color in ((-0.22, "#c08b9a"), (0.0, "#d8b47a"), (0.22, "#8faec9")):
+            r = max(0.8, s * 0.035)
+            self.canvas.create_oval(
+                cx + dx * s - r,
+                cy + s * 0.07 - r,
+                cx + dx * s + r,
+                cy + s * 0.07 + r,
+                fill=color,
+                outline="",
+            )
+
+    def _draw_planet(self, row, col):
+        """Dibuja el destino (B) como un planeta anillado."""
+        cx, cy = self._sprite_center(row, col)
+        s = self.cell_px
+        if s < 7:
+            self.canvas.create_oval(
+                cx - s * 0.18,
+                cy - s * 0.18,
+                cx + s * 0.18,
+                cy + s * 0.18,
+                fill=self.TARGET_COLOR,
+                outline="#e0bcc6",
+            )
+            return
+
+        self.canvas.create_oval(
+            cx - s * 0.40,
+            cy - s * 0.32,
+            cx + s * 0.40,
+            cy + s * 0.32,
+            outline="#4a3038",
+            width=max(1, int(s * 0.10)),
+        )
+        self.canvas.create_oval(
+            cx - s * 0.49,
+            cy - s * 0.15,
+            cx + s * 0.49,
+            cy + s * 0.15,
+            outline="#c9ad7f",
+            width=max(1, int(s * 0.05)),
+        )
+        self.canvas.create_oval(
+            cx - s * 0.27,
+            cy - s * 0.27,
+            cx + s * 0.27,
+            cy + s * 0.27,
+            fill=self.TARGET_COLOR,
+            outline="#e0bcc6",
+            width=max(1, int(s * 0.04)),
+        )
+        self.canvas.create_oval(
+            cx - s * 0.17,
+            cy - s * 0.17,
+            cx + s * 0.01,
+            cy + s * 0.01,
+            fill="#d6aab4",
+            outline="",
+        )
+        self.canvas.create_oval(
+            cx + s * 0.24,
+            cy - s * 0.31,
+            cx + s * 0.32,
+            cy - s * 0.23,
+            fill="#d8c8a4",
+            outline="",
+        )
+
+    def _draw_ufo_marker(self, cx, cy):
+        """Mini OVNI que se desplaza sobre el nodo actual."""
+        s = self.cell_px
+        if s < 7:
+            r = max(1.6, s * 0.26)
+            return [
+                self.canvas.create_oval(
+                    cx - r,
+                    cy - r,
+                    cx + r,
+                    cy + r,
+                    fill=self.CURRENT,
+                    outline="",
+                )
+            ]
+        items = []
+        glow = max(2.0, s * 0.44)
+        items.append(
+            self.canvas.create_oval(
+                cx - glow,
+                cy - glow * 0.62,
+                cx + glow,
+                cy + glow * 0.62,
+                outline="#2c4a52",
+                width=max(2, int(s * 0.08)),
+            )
+        )
+        if s >= 7:
+            items.append(
+                self.canvas.create_polygon(
+                    cx - s * 0.18,
+                    cy + s * 0.12,
+                    cx + s * 0.18,
+                    cy + s * 0.12,
+                    cx + s * 0.09,
+                    cy + s * 0.40,
+                    cx - s * 0.09,
+                    cy + s * 0.40,
+                    fill="#233843",
+                    outline="",
+                    stipple="gray25",
+                )
+            )
+        items.append(
+            self.canvas.create_oval(
+                cx - s * 0.33,
+                cy - s * 0.10,
+                cx + s * 0.33,
+                cy + s * 0.16,
+                fill="#e6edf4",
+                outline=self.ACCENT,
+                width=max(1, int(s * 0.04)),
+            )
+        )
+        items.append(
+            self.canvas.create_oval(
+                cx - s * 0.14,
+                cy - s * 0.25,
+                cx + s * 0.14,
+                cy + s * 0.03,
+                fill="#9fc9bc",
+                outline="#eef4f8",
+            )
+        )
+        for dx, color in ((-0.18, "#c08b9a"), (0.0, "#d8b47a"), (0.18, "#8faec9")):
+            r = max(0.8, s * 0.032)
+            items.append(
+                self.canvas.create_oval(
+                    cx + dx * s - r,
+                    cy + s * 0.06 - r,
+                    cx + dx * s + r,
+                    cy + s * 0.06 + r,
+                    fill=color,
+                    outline="",
+                )
+            )
+        return items
+
     def _paint_range(self, start, end):
         if not self.sequence or not self.cell_items:
             return
         total = len(self.sequence)
-        labels = self._labels_enabled()
-        font_size = max(7, min(14, int(self.cell_px * 0.32)))
         for i in range(max(0, start), min(total, end)):
             r, c = self.sequence[i]
             ch = self.maze.grid[r][c]
             if ch not in "AB":
                 self.canvas.itemconfigure(self.cell_items[r][c], fill=self._gradient_for(i, total))
-            if labels:
-                x0, y0, x1, y1 = self._cell_rect(r, c)
-                self.order_labels.append(
-                    self.canvas.create_text(
-                        (x0 + x1) / 2.0,
-                        (y0 + y1) / 2.0,
-                        text=str(i + 1),
-                        fill="#f8fafc",
-                        font=("Segoe UI", font_size, "bold"),
-                    )
-                )
-
-    def _add_labels(self, start, end):
-        if not self.sequence or not self._labels_enabled():
-            return
-        total = len(self.sequence)
-        font_size = max(7, min(14, int(self.cell_px * 0.32)))
-        for i in range(max(0, start), min(total, end)):
-            r, c = self.sequence[i]
-            x0, y0, x1, y1 = self._cell_rect(r, c)
-            self.order_labels.append(
-                self.canvas.create_text(
-                    (x0 + x1) / 2.0,
-                    (y0 + y1) / 2.0,
-                    text=str(i + 1),
-                    fill="#f8fafc",
-                    font=("Segoe UI", font_size, "bold"),
-                )
-            )
-
-    def _clear_labels(self):
-        for item in self.order_labels:
-            self.canvas.delete(item)
-        self.order_labels = []
 
     def _delete_marker(self):
-        if self.marker_item is not None:
-            self.canvas.delete(self.marker_item)
-            self.marker_item = None
+        for item in self.marker_items:
+            self.canvas.delete(item)
+        self.marker_items = []
 
     def _delete_trail(self):
-        if self.trail_item is not None:
-            self.canvas.delete(self.trail_item)
-            self.trail_item = None
+        for item in self.trail_items:
+            self.canvas.delete(item)
+        self.trail_items = []
 
     def _clear_overlay(self):
         if self.cell_items and self.sequence and self.maze:
@@ -1713,7 +2142,6 @@ class MazeGui:
                 ch = self.maze.grid[r][c]
                 if ch not in "AB":
                     self.canvas.itemconfigure(self.cell_items[r][c], fill=self._base_color(ch))
-        self._clear_labels()
         self._delete_marker()
         self._delete_trail()
         self.index = 0
@@ -1727,40 +2155,41 @@ class MazeGui:
             return
 
         r, c = self.sequence[self.index - 1]
-        x0, y0, x1, y1 = self._cell_rect(r, c)
-        line_width = max(2, min(4, int(self.cell_px * 0.18)))
-        if self.marker_item is None:
-            self.marker_item = self.canvas.create_rectangle(
-                x0, y0, x1, y1, outline=self.CURRENT, width=line_width
-            )
-        else:
-            self.canvas.coords(self.marker_item, x0, y0, x1, y1)
-            self.canvas.itemconfigure(self.marker_item, width=line_width)
+        cx, cy = self._sprite_center(r, c)
+        self._delete_marker()
+        self.marker_items = self._draw_ufo_marker(cx, cy)
 
         if self.current_kind in PATH_KINDS and self.index >= 2:
             points = []
             for rr, cc in self.sequence[: self.index]:
                 xx0, yy0, xx1, yy1 = self._cell_rect(rr, cc)
                 points.extend(((xx0 + xx1) / 2.0, (yy0 + yy1) / 2.0))
-            trail_width = max(2.0, min(5.0, self.cell_px * 0.25))
-            if self.trail_item is None:
-                self.trail_item = self.canvas.create_line(
-                    *points,
-                    fill=self.TRAIL,
-                    width=trail_width,
-                    capstyle="round",
-                    joinstyle="round"
-                )
+            trail_width = max(2.0, min(6.0, self.cell_px * 0.25))
+            trail_layers = (
+                (trail_width * 2.8, "#2c2a26"),
+                (trail_width * 1.7, self.TRAIL),
+                (trail_width * 0.7, "#f0e6d8"),
+            )
+            if not self.trail_items:
+                for width, color in trail_layers:
+                    self.trail_items.append(
+                        self.canvas.create_line(
+                            *points,
+                            fill=color,
+                            width=width,
+                            capstyle="round",
+                            joinstyle="round",
+                        )
+                    )
             else:
-                self.canvas.coords(self.trail_item, *points)
-                self.canvas.itemconfigure(self.trail_item, width=trail_width)
+                for item, (width, color) in zip(self.trail_items, trail_layers):
+                    self.canvas.coords(item, *points)
+                    self.canvas.itemconfigure(item, width=width, fill=color)
         else:
             self._delete_trail()
 
-        for item in self.order_labels:
+        for item in self.marker_items:
             self.canvas.tag_raise(item)
-        if self.marker_item is not None:
-            self.canvas.tag_raise(self.marker_item)
 
     # ------------------------------------------------------------ navegación --
     def fit_view(self):
@@ -1809,6 +2238,12 @@ class MazeGui:
 
     def _on_close(self):
         self._stop_playback()
+        if self._star_job is not None:
+            try:
+                self.root.after_cancel(self._star_job)
+            except tk.TclError:
+                pass
+            self._star_job = None
         for temp_dir in self.temp_dirs:
             shutil.rmtree(temp_dir, ignore_errors=True)
         self.temp_dirs = []
