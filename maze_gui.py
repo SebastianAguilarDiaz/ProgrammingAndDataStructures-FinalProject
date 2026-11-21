@@ -63,67 +63,65 @@ class Maze:
 def parse_maze(path):
     """Lee el .in con la misma semántica que loadMatrix() de maze.cpp.
 
-    El C++ usa `fin >> filas >> columnas` y luego `fin >> caracter`, por lo que
-    los caracteres se consumen como un flujo continuo, ignorando saltos de
-    línea. Esto mantiene las coordenadas alineadas con los .sol de a.exe.
+    El C++ descarta la primera línea y luego lee una fila por cada línea
+    restante, conservando todos sus caracteres. El ancho lo fija la primera
+    fila de la cuadrícula. Esto mantiene las coordenadas alineadas con a.exe.
     """
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
         text = fh.read()
 
-    tokens = text.split()
-    if len(tokens) < 2:
-        raise MazeError("El archivo debe iniciar con el número de filas y columnas.")
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
 
-    try:
-        rows = int(tokens[0])
-        cols = int(tokens[1])
-    except ValueError:
-        raise MazeError("Las primeras dos palabras deben ser números: filas y columnas.")
-
-    if rows <= 0 or cols <= 0:
-        raise MazeError("Las filas y columnas deben ser mayores que cero.")
-    if rows * cols > 4_000_000:
-        raise MazeError("El laberinto es demasiado grande para dibujarlo.")
-
-    chars = "".join(tokens[2:])
-    needed = rows * cols
-    if len(chars) < needed:
+    if not lines:
         raise MazeError(
-            "Faltan celdas: el encabezado pide {} y el archivo solo tiene {}.".format(needed, len(chars))
+            "El archivo está vacío; a.exe descarta la primera línea como encabezado y no encontró cuadrícula."
         )
+
+    header = lines[0]
+    body = lines[1:]
+    if not body:
+        raise MazeError(
+            "No hay cuadrícula después de la primera línea; a.exe descarta esa línea como encabezado."
+        )
+
+    rows = len(body)
+    cols = len(body[0])
+    if cols == 0:
+        raise MazeError(
+            "La primera fila de la cuadrícula está vacía; a.exe usaría 0 columnas y no podría recorrerla."
+        )
+
+    for idx, line in enumerate(body, start=2):
+        if len(line) != cols:
+            raise MazeError(
+                "La línea {} tiene {} caracteres, pero la primera fila de la cuadrícula tiene {}. "
+                "a.exe usa el ancho de la primera fila, así que el archivo es inconsistente.".format(
+                    idx, len(line), cols
+                )
+            )
+
+    grid = [list(line) for line in body]
 
     warnings = []
-    if len(chars) > needed:
+    header_parts = header.lstrip("\ufeff").split()
+    declared = None
+    if len(header_parts) == 2:
+        try:
+            declared = (int(header_parts[0]), int(header_parts[1]))
+        except ValueError:
+            declared = None
+
+    if declared is None:
         warnings.append(
-            "Hay {} caracteres extra después de la cuadrícula; a.exe los ignora.".format(len(chars) - needed)
+            "La primera línea no es un encabezado «filas columnas» válido; a.exe igualmente la descarta."
         )
-
-    grid = [list(chars[r * cols:(r + 1) * cols]) for r in range(rows)]
-
-    # Compara el largo de las líneas con las columnas declaradas (solo si hay
-    # exactamente una línea por fila, que es el formato esperado).
-    raw_lines = [line for line in text.splitlines() if line.strip()]
-    if len(raw_lines) - 1 == rows:
-        header = raw_lines[0].split()
-        if len(header) == 2:
-            bad = []
-            for idx, line in enumerate(raw_lines[1:], start=2):
-                width = len("".join(line.split()))
-                if width != cols:
-                    bad.append((idx, width))
-            if bad:
-                first_line, first_width = bad[0]
-                if len(bad) == 1:
-                    warnings.append(
-                        "La línea {} tiene {} caracteres; el encabezado declara {} columnas.".format(
-                            first_line, first_width, cols
-                        )
-                    )
-                else:
-                    warnings.append(
-                        "{} líneas tienen {} caracteres; el encabezado declara {} columnas. "
-                        "a.exe los reacomoda como flujo continuo.".format(len(bad), first_width, cols)
-                    )
+    elif declared != (rows, cols):
+        warnings.append(
+            "El encabezado declara {} × {} celdas, pero la cuadrícula tiene {} × {}; "
+            "a.exe ignora el encabezado y usa las líneas.".format(declared[0], declared[1], rows, cols)
+        )
 
     # Primer A y primer B en orden de lectura, igual que findNode().
     root = target = None
@@ -154,16 +152,26 @@ def parse_maze(path):
             extra_target, target[0], target[1]))
 
     allowed = set("01AB")
-    unknown = [(r, c, grid[r][c]) for r in range(rows) for c in range(cols) if grid[r][c] not in allowed]
-    if unknown:
-        r, c, ch = unknown[0]
+    unknown_count = 0
+    first_unknown = None
+    path_cells = 0
+    for r, row in enumerate(grid):
+        for c, ch in enumerate(row):
+            if ch == "1":
+                path_cells += 1
+            elif ch not in allowed:
+                unknown_count += 1
+                if first_unknown is None:
+                    first_unknown = (r, c, ch)
+
+    if unknown_count:
+        r, c, ch = first_unknown
         warnings.append(
             "Hay {} caracteres desconocidos (el primero: '{}' en fila {}, col {}); a.exe los trata como muro.".format(
-                len(unknown), ch, r, c
+                unknown_count, ch, r, c
             )
         )
 
-    path_cells = sum(1 for row in grid for ch in row if ch == "1")
     return Maze(rows, cols, grid, root, target, path_cells, warnings)
 
 
@@ -341,6 +349,9 @@ class MazeGui:
     )
     STAR_COLORS = ("#dfe9f4", "#c3d7ea", "#e3d8c5", "#c8c4db")
     NEBULA_COLORS = ("#0d1521", "#0f1725", "#101a28", "#0b151e")
+    MAX_DRAW_CELLS = 60_000
+    MAX_ISO_CELLS = 25_000
+    LIST_WINDOW = 2_000
 
     def __init__(self, root, initial_file=None):
         self.root = root
@@ -364,12 +375,21 @@ class MazeGui:
         self.oy = 0.0
         self.cell_items = []
         self.marker_items = []
+        self.marker_pos = None
         self.trail_items = []
+        self.trail_count = 0
+        self.overlay_items = {}
+        self.painted_cells = set()
+        self.view_mode = "2d"
+        self.render_scale = 1
+        self.draw_ready = False
         self.solver_issues = []
         self.log = ""
         self.temp_dirs = []
         self._resize_job = None
         self._updating_list = False
+        self._list_start = 0
+        self._list_total = 0
         self._step_accum = 0
         self.star_items = []
         self._star_job = None
@@ -599,6 +619,7 @@ class MazeGui:
         self.speed_label_var = tk.StringVar(value="10 pasos/s")
         self.speed_var = tk.DoubleVar(value=3.0)
         self.quick_var = tk.StringVar(value="")
+        self.list_hint_var = tk.StringVar(value="Registro · clic para saltar")
 
         header = tk.Frame(self.root, bg=self.PANEL)
         header.pack(fill="x")
@@ -689,6 +710,9 @@ class MazeGui:
         self._legend_chip(toolbar, self.gradient[80], "Explorado")
         self._legend_chip(toolbar, self.CURRENT, "Sonda")
         self._legend_chip(toolbar, self.TRAIL, "Estela")
+
+        self.view_btn = self._flat_button(toolbar, "Vista 2D", self.toggle_view, small=True)
+        self.view_btn.pack(side="right", padx=(0, 12))
 
         zoom_box = tk.Frame(toolbar, bg=self.BG)
         zoom_box.pack(side="right")
@@ -868,7 +892,7 @@ class MazeGui:
         order_body.grid_columnconfigure(0, weight=1)
         tk.Label(
             order_body,
-            text="Registro  ·  (fila, col)   —   clic para saltar",
+            textvariable=self.list_hint_var,
             bg=self.CARD,
             fg=self.MUTED,
             font=self.font_small,
@@ -1268,17 +1292,31 @@ class MazeGui:
         self._updating_list = True
         self.order_list.delete(0, "end")
         if not self.sequence:
+            self._list_start = 0
+            self._list_total = 0
             self.order_list.insert("end", "  (sin recorrido)")
             self.order_list.configure(state="disabled")
+            self.list_hint_var.set("Registro · sin recorrido")
             self._updating_list = False
             return
+
+        total = len(self.sequence)
+        window = min(self.LIST_WINDOW, total)
+        start = self.index - window // 2
+        start = max(0, min(total - window, start))
+        end = min(total, start + window)
+        self._list_start = start
+        self._list_total = total
         items = [
-            "{:>5}   ({:>3}, {:>3})".format(idx + 1, r, c)
-            for idx, (r, c) in enumerate(self.sequence)
+            "{:>5}   ({:>3}, {:>3})".format(idx + 1, *self.sequence[idx])
+            for idx in range(start, end)
         ]
         self.order_list.configure(state="normal")
         self.order_list.insert("end", *items)
         self.order_list.selection_clear(0, "end")
+        self.list_hint_var.set(
+            "Registro {}–{} de {} · clic para saltar".format(start + 1, end, total)
+        )
         self._updating_list = False
 
     def _on_order_select(self, _event=None):
@@ -1287,7 +1325,7 @@ class MazeGui:
         selection = self.order_list.curselection()
         if not selection:
             return
-        target = selection[0] + 1
+        target = self._list_start + selection[0] + 1
         self._stop_playback()
         self.set_index(target)
         if self.index > 0:
@@ -1343,7 +1381,11 @@ class MazeGui:
         self.index = 0
         self._update_kind_rows()
         self._set_controls_enabled(True)
-        self._populate_order_list()
+        if not full:
+            self._populate_order_list()
+        else:
+            self.order_list.delete(0, "end")
+            self._list_start = 0
         self.desc_var.set(KIND_DESC[kind])
         self._set_default_speed(len(self.sequence))
         self._update_progress()
@@ -1490,7 +1532,7 @@ class MazeGui:
         )
 
     def set_index(self, target):
-        if not self.sequence or not self.cell_items:
+        if not self.sequence or not self.maze or not self.draw_ready:
             return
         total = len(self.sequence)
         target = max(0, min(total, int(target)))
@@ -1499,11 +1541,8 @@ class MazeGui:
             return
 
         if target < self.index:
-            for i in range(target, self.index):
-                r, c = self.sequence[i]
-                ch = self.maze.grid[r][c]
-                if ch not in "AB":
-                    self.canvas.itemconfigure(self.cell_items[r][c], fill=self._base_color(ch))
+            self._clear_painted()
+            self._paint_range(0, target)
             self.index = target
         else:
             self._paint_range(self.index, target)
@@ -1531,14 +1570,22 @@ class MazeGui:
     def _update_order_selection(self):
         if not self.sequence:
             return
+        item = self.index - 1
+        if self.index > 0:
+            local = item - self._list_start
+            if local < 0 or local >= self.order_list.size():
+                self._populate_order_list()
+                local = item - self._list_start
+
         self._updating_list = True
         try:
             self.order_list.selection_clear(0, "end")
             if self.index > 0:
-                item = self.index - 1
-                self.order_list.selection_set(item)
-                self.order_list.activate(item)
-                self.order_list.see(max(0, item - 3))
+                local = item - self._list_start
+                if 0 <= local < self.order_list.size():
+                    self.order_list.selection_set(local)
+                    self.order_list.activate(local)
+                    self.order_list.see(max(0, local - 3))
         finally:
             self._updating_list = False
 
@@ -1582,6 +1629,10 @@ class MazeGui:
         }.get(ch, self.UNKNOWN)
 
     def _cell_rect(self, row, col):
+        if self.view_mode == "2d":
+            x = self.ox + col * self.cell_px
+            y = self.oy + row * self.cell_px
+            return x, y, x + self.cell_px, y + self.cell_px
         tw = self.cell_px
         cx = self.ox + (col - row) * tw * 0.5
         cy = self.oy + (col + row) * tw * 0.25
@@ -1666,7 +1717,13 @@ class MazeGui:
         self.canvas.delete("all")
         self.cell_items = []
         self.marker_items = []
+        self.marker_pos = None
         self.trail_items = []
+        self.trail_count = 0
+        self.overlay_items = {}
+        self.painted_cells = set()
+        self.render_scale = 1
+        self.draw_ready = False
 
         width = max(self.canvas.winfo_width(), 240)
         height = max(self.canvas.winfo_height(), 200)
@@ -1688,6 +1745,24 @@ class MazeGui:
             self.canvas.configure(scrollregion=(0, 0, width, height))
             return
 
+        if (
+            self.view_mode == "iso"
+            and self.maze.rows * self.maze.cols > self.MAX_ISO_CELLS
+        ):
+            self.view_mode = "2d"
+            self._update_view_button()
+
+        if self.view_mode == "2d":
+            self._redraw_2d(width, height)
+        else:
+            self._redraw_iso(width, height)
+
+        self.draw_ready = True
+        if self.sequence and self.index > 0:
+            self._paint_range(0, self.index)
+            self._update_marker_and_trail()
+
+    def _redraw_iso(self, width, height):
         maze = self.maze
         rows, cols = maze.rows, maze.cols
         span = rows + cols
@@ -1790,9 +1865,111 @@ class MazeGui:
         scroll_h = max(height, bottom + shadow_extent + PAD)
         self.canvas.configure(scrollregion=(0, 0, scroll_w, scroll_h))
 
-        if self.sequence and self.index > 0:
-            self._paint_range(0, self.index)
-            self._update_marker_and_trail()
+    def _redraw_2d(self, width, height):
+        maze = self.maze
+        rows, cols = maze.rows, maze.cols
+
+        if self.auto_fit:
+            self.base_cell = max(
+                1.4,
+                min(
+                    (width - 2 * PAD) / max(1, cols),
+                    (height - 2 * PAD) / max(1, rows),
+                ),
+            )
+
+        cell = max(1.4, self.base_cell * self.zoom)
+        self.cell_px = cell
+        self.wall_h = 0
+        total_w = cell * cols
+        total_h = cell * rows
+        self.ox = max(PAD, (width - total_w) / 2.0)
+        self.oy = max(PAD, (height - total_h) / 2.0)
+
+        scale = 1
+        while True:
+            block_rows = (rows + scale - 1) // scale
+            block_cols = (cols + scale - 1) // scale
+            if block_rows * block_cols <= self.MAX_DRAW_CELLS:
+                break
+            scale += 1
+        self.render_scale = scale
+
+        block_colors = []
+        for br in range(block_rows):
+            colors = []
+            for bc in range(block_cols):
+                colors.append(self._block_color(br * scale, bc * scale, scale))
+            block_colors.append(colors)
+
+        for br in range(block_rows):
+            y0 = self.oy + br * scale * cell
+            y1 = self.oy + min(rows, (br + 1) * scale) * cell
+            bc = 0
+            while bc < block_cols:
+                color = block_colors[br][bc]
+                bc2 = bc + 1
+                while bc2 < block_cols and block_colors[br][bc2] == color:
+                    bc2 += 1
+                x0 = self.ox + bc * scale * cell
+                x1 = self.ox + min(cols, bc2 * scale) * cell
+                self.canvas.create_rectangle(x0, y0, x1, y1, fill=color, outline="")
+                bc = bc2
+
+        block_px = cell * scale
+        if block_px >= 8:
+            for bc in range(block_cols + 1):
+                x = min(self.ox + bc * block_px, self.ox + total_w)
+                self.canvas.create_line(x, self.oy, x, self.oy + total_h, fill=self.GRID)
+            for br in range(block_rows + 1):
+                y = min(self.oy + br * block_px, self.oy + total_h)
+                self.canvas.create_line(self.ox, y, self.ox + total_w, y, fill=self.GRID)
+
+        self.canvas.create_rectangle(
+            self.ox,
+            self.oy,
+            self.ox + total_w,
+            self.oy + total_h,
+            outline=self.BORDER,
+            width=1,
+        )
+        if maze.root:
+            self._draw_ship(*maze.root)
+        if maze.target:
+            self._draw_planet(*maze.target)
+
+        scroll_w = max(width, self.ox + total_w + PAD)
+        scroll_h = max(height, self.oy + total_h + PAD)
+        self.canvas.configure(scrollregion=(0, 0, scroll_w, scroll_h))
+
+    def _block_color(self, r0, c0, scale):
+        best_rank = 0
+        color = self.WALL
+        for r in range(r0, min(r0 + scale, self.maze.rows)):
+            for c in range(c0, min(c0 + scale, self.maze.cols)):
+                ch = self.maze.grid[r][c]
+                if ch == "A":
+                    return self.ROOT_COLOR
+                if ch == "B":
+                    rank = 3
+                elif ch == "1":
+                    rank = 2
+                elif ch == "0":
+                    rank = 0
+                else:
+                    rank = 1
+                if rank > best_rank:
+                    best_rank = rank
+                    color = self._base_color(ch)
+        return color
+
+    def _block_rect(self, block_row, block_col):
+        scale = self.render_scale
+        x0 = self.ox + block_col * scale * self.cell_px
+        y0 = self.oy + block_row * scale * self.cell_px
+        x1 = self.ox + min(self.maze.cols, (block_col + 1) * scale) * self.cell_px
+        y1 = self.oy + min(self.maze.rows, (block_row + 1) * scale) * self.cell_px
+        return x0, y0, x1, y1
 
     @staticmethod
     def _shift_points(points, dx, dy):
@@ -2115,83 +2292,185 @@ class MazeGui:
             )
         return items
 
+    def _paint_block(self, key, color):
+        item = self.overlay_items.get(key)
+        if item is None:
+            x0, y0, x1, y1 = self._block_rect(*key)
+            outline = self.GRID if self.cell_px * self.render_scale >= 8 else ""
+            item = self.canvas.create_rectangle(
+                x0, y0, x1, y1, fill=color, outline=outline, width=1
+            )
+            self.overlay_items[key] = item
+        else:
+            self.canvas.itemconfigure(item, fill=color)
+
+    def _paint_cell(self, row, col, color):
+        if self.view_mode == "iso":
+            self.canvas.itemconfigure(self.cell_items[row][col], fill=color)
+            self.painted_cells.add((row, col))
+            return
+        scale = self.render_scale
+        self._paint_block((row // scale, col // scale), color)
+
     def _paint_range(self, start, end):
-        if not self.sequence or not self.cell_items:
+        if not self.sequence or not self.maze or not self.draw_ready:
             return
         total = len(self.sequence)
-        for i in range(max(0, start), min(total, end)):
+        start = max(0, start)
+        end = min(total, end)
+        if end <= start:
+            return
+
+        scale = self.render_scale if self.view_mode == "2d" else 1
+        last_visit = {}
+        for i in range(start, end):
             r, c = self.sequence[i]
-            ch = self.maze.grid[r][c]
-            if ch not in "AB":
-                self.canvas.itemconfigure(self.cell_items[r][c], fill=self._gradient_for(i, total))
+            if self.maze.grid[r][c] in "AB":
+                continue
+            key = (r // scale, c // scale) if scale > 1 else (r, c)
+            last_visit[key] = i
+
+        for key, i in last_visit.items():
+            color = self._gradient_for(i, total)
+            if self.view_mode == "iso":
+                self._paint_cell(key[0], key[1], color)
+            else:
+                self._paint_block(key, color)
+
+    def _clear_painted(self):
+        if self.view_mode == "iso":
+            if self.cell_items and self.maze:
+                for r, c in self.painted_cells:
+                    ch = self.maze.grid[r][c]
+                    if ch not in "AB":
+                        self.canvas.itemconfigure(self.cell_items[r][c], fill=self._base_color(ch))
+        else:
+            for item in self.overlay_items.values():
+                self.canvas.delete(item)
+            self.overlay_items = {}
+        self.painted_cells.clear()
 
     def _delete_marker(self):
         for item in self.marker_items:
             self.canvas.delete(item)
         self.marker_items = []
+        self.marker_pos = None
 
     def _delete_trail(self):
         for item in self.trail_items:
             self.canvas.delete(item)
         self.trail_items = []
+        self.trail_count = 0
 
     def _clear_overlay(self):
-        if self.cell_items and self.sequence and self.maze:
-            for i in range(min(self.index, len(self.sequence))):
-                r, c = self.sequence[i]
-                ch = self.maze.grid[r][c]
-                if ch not in "AB":
-                    self.canvas.itemconfigure(self.cell_items[r][c], fill=self._base_color(ch))
+        self._clear_painted()
         self._delete_marker()
         self._delete_trail()
         self.index = 0
         if hasattr(self, "progress"):
             self._update_progress()
 
+    def _update_trail(self):
+        trail_width = max(2.0, min(6.0, self.cell_px * 0.25))
+        trail_layers = (
+            (trail_width * 2.8, "#2c2a26"),
+            (trail_width * 1.7, self.TRAIL),
+            (trail_width * 0.7, "#f0e6d8"),
+        )
+
+        if self.index < 2:
+            self._delete_trail()
+            return
+
+        if self.trail_count > self.index:
+            remove = (self.trail_count - self.index) * len(trail_layers)
+            for _ in range(min(remove, len(self.trail_items))):
+                self.canvas.delete(self.trail_items.pop())
+            self.trail_count = self.index
+
+        if self.trail_count == 0:
+            self.trail_count = 1
+
+        for i in range(max(1, self.trail_count), self.index):
+            x0, y0 = self._sprite_center(*self.sequence[i - 1])
+            x1, y1 = self._sprite_center(*self.sequence[i])
+            for width, color in trail_layers:
+                self.trail_items.append(
+                    self.canvas.create_line(
+                        x0,
+                        y0,
+                        x1,
+                        y1,
+                        fill=color,
+                        width=width,
+                        capstyle="round",
+                        joinstyle="round",
+                    )
+                )
+        self.trail_count = self.index
+
     def _update_marker_and_trail(self):
-        if not self.sequence or self.index <= 0 or not self.cell_items:
+        if not self.sequence or self.index <= 0 or not self.draw_ready:
             self._delete_marker()
             self._delete_trail()
             return
 
         r, c = self.sequence[self.index - 1]
         cx, cy = self._sprite_center(r, c)
-        self._delete_marker()
-        self.marker_items = self._draw_ufo_marker(cx, cy)
+        if self.marker_items and self.marker_pos is not None:
+            dx = cx - self.marker_pos[0]
+            dy = cy - self.marker_pos[1]
+            if dx or dy:
+                for item in self.marker_items:
+                    self.canvas.move(item, dx, dy)
+        else:
+            self._delete_marker()
+            self.marker_items = self._draw_ufo_marker(cx, cy)
+        self.marker_pos = (cx, cy)
 
         if self.current_kind in PATH_KINDS and self.index >= 2:
-            points = []
-            for rr, cc in self.sequence[: self.index]:
-                xx0, yy0, xx1, yy1 = self._cell_rect(rr, cc)
-                points.extend(((xx0 + xx1) / 2.0, (yy0 + yy1) / 2.0))
-            trail_width = max(2.0, min(6.0, self.cell_px * 0.25))
-            trail_layers = (
-                (trail_width * 2.8, "#2c2a26"),
-                (trail_width * 1.7, self.TRAIL),
-                (trail_width * 0.7, "#f0e6d8"),
-            )
-            if not self.trail_items:
-                for width, color in trail_layers:
-                    self.trail_items.append(
-                        self.canvas.create_line(
-                            *points,
-                            fill=color,
-                            width=width,
-                            capstyle="round",
-                            joinstyle="round",
-                        )
-                    )
-            else:
-                for item, (width, color) in zip(self.trail_items, trail_layers):
-                    self.canvas.coords(item, *points)
-                    self.canvas.itemconfigure(item, width=width, fill=color)
+            self._update_trail()
         else:
             self._delete_trail()
 
+        for item in self.trail_items:
+            self.canvas.tag_raise(item)
         for item in self.marker_items:
             self.canvas.tag_raise(item)
 
     # ------------------------------------------------------------ navegación --
+    def toggle_view(self):
+        self.set_view_mode("iso" if self.view_mode == "2d" else "2d")
+
+    def set_view_mode(self, mode):
+        if mode not in ("2d", "iso") or mode == self.view_mode:
+            return
+        if (
+            mode == "iso"
+            and self.maze
+            and self.maze.rows * self.maze.cols > self.MAX_ISO_CELLS
+        ):
+            self.set_status(
+                "La vista isométrica se desactiva para mallas grandes; se mantiene la vista 2D.",
+                "warn",
+            )
+            return
+        self.view_mode = mode
+        self.auto_fit = True
+        self.zoom = 1.0
+        self._update_zoom_label()
+        self._update_view_button()
+        self.redraw()
+        self.set_status(
+            "Vista {}.".format("2D" if mode == "2d" else "isométrica"), "info"
+        )
+
+    def _update_view_button(self):
+        if not hasattr(self, "view_btn"):
+            return
+        text = "Vista 2D" if self.view_mode == "2d" else "Vista isométrica"
+        self.view_btn.configure(text=text)
+
     def fit_view(self):
         self.auto_fit = True
         self.zoom = 1.0

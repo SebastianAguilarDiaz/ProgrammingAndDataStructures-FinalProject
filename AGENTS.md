@@ -91,22 +91,27 @@ Símbolos (definidos en `maze.cpp:11-14`):
 
 Reglas de lectura (importante, la GUI las replica):
 
-- C++ usa `fin >> filas >> columnas` y luego `fin >> caracter`, es decir, **lee los caracteres
-  como un flujo continuo separado por espacios/saltos de línea**, no por líneas.
-- Solo se consumen `filas * columnas` caracteres; los extra se ignoran.
+- `loadMatrix` **descarta la primera línea** (el encabezado) y luego lee **una fila por cada
+  línea restante**, conservando todos sus caracteres, incluidos espacios y tabulaciones.
+- Las dimensiones reales salen de la cuadrícula: filas = líneas restantes; columnas = longitud de
+  la primera línea restante. El encabezado no se usa para dimensionar ni recortar celdas.
+- Todas las filas deben tener el mismo ancho. C++ indexa con el ancho de la primera fila y puede
+  leer fuera de rango si alguna es más corta; la GUI rechaza el archivo con un error claro.
+- Si no queda ninguna fila después del encabezado, C++ no puede recorrer el laberinto; la GUI
+  muestra error.
 - Se usa la **primera** `A` y la **primera** `B` en orden de lectura (fila por fila, izquierda a
   derecha). Ver `findNode()` en `maze.cpp:271`.
 - Cualquier carácter distinto de `0`, `1`, `A`, `B` se comporta como muro.
-- Si faltan celdas, el flujo de C++ falla y el laberinto queda incompleto; la GUI lo detecta y
-  muestra error.
 - Coordenadas: siempre `(fila, columna)`, base 0. `A` y `B` son celdas transitables.
+- La GUI no impone un límite de 4 millones de caracteres; las mallas enormes se aceptan y solo se
+  simplifica su dibujo. Tampoco debe rechazarse una entrada por tamaño.
 
 ### Particularidad de los datos
 
-`laberinto_4.in` declara `30 60` pero cada línea tiene 62 caracteres (1860 en total). Como C++
-lee en flujo continuo, toma los primeros 1800 caracteres y **desalinea las filas**; la GUI avisa
-de los caracteres extra pero reproduce la misma interpretación para que las coordenadas coincidan
-con `a.exe`. Los demás archivos cuadran con su encabezado.
+`laberinto_4.in` declara `30 60` pero sus 30 líneas de cuadrícula tienen 62 caracteres (1860 en
+total). Como C++ ignora el encabezado, la cuadrícula real es `30 × 62`, con `A` en `(17,14)` y
+`B` en `(29,12)`. La GUI avisa de la discrepancia y usa la misma interpretación. Los demás
+archivos cuadran con su encabezado.
 
 ## 5. Núcleo C++ (`maze.cpp`)
 
@@ -119,7 +124,8 @@ con `a.exe`. Los demás archivos cuadran con su encabezado.
   `getNodeCords`. Es la clave de los `unordered_map<int,Node*>` que representan cada árbol.
 - Movimientos (`maze.cpp:18`): abajo, izquierda, arriba, derecha — `{1,0}`, `{0,-1}`,
   `{-1,0}`, `{0,1}`. El orden importa para la forma de ambos árboles.
-- `loadMatrix`: lectura secuencial descrita arriba.
+- `loadMatrix` (`maze.cpp:216`): descarta la primera línea y lee las siguientes como filas
+  literales; el ancho queda fijado por la primera fila.
 - `findNode`: primer carácter objetivo en orden row-major.
 - `solveMaze` (`maze.cpp:153`): orquesta todo; valida que existan `A` y `B`; construye ambos
   árboles; escribe cinco `.sol`; libera los nodos.
@@ -166,11 +172,16 @@ Para una entrada `X.in`, `file_name = ruta sin los últimos 3 caracteres` (norma
 
 ### Configuración y constantes
 
-- `APP_NAME = "MazeView"`, subtítulo y estilos en la clase `MazeGui` (`maze_gui.py:295`).
+- `APP_NAME = "MazeView"`, subtítulo y estilos en la clase `MazeGui` (`maze_gui.py:318`).
 - `TICK_MS = 40`, `SOLVER_TIMEOUT = 120` s, `SPEED_VALUES = [1, 2, 5, 10, 25, 50, 100, 250, 1000]`.
-- `KINDS` (`maze_gui.py:33`) define las cinco salidas: clave del `.sol`, etiqueta, grupo
+- `KINDS` (`maze_gui.py:34`) define las cinco salidas: clave del `.sol`, etiqueta, grupo
   (`tree` o `path`) y descripción.
-- `PATH_KINDS = {"dfs_solution", "bfs_solution"}`: solo estas dibujan la línea de ruta.
+- `PATH_KINDS = {"dfs_solution", "bfs_solution"}` (`maze_gui.py:43`): solo estas dibujan la ruta.
+- La vista inicia en 2D (`view_mode = "2d"`). Los límites de dibujo son `MAX_DRAW_CELLS = 60_000`
+  (bloques 2D antes de aplicar reducción), `MAX_ISO_CELLS = 25_000` (la vista isométrica se
+  desactiva por encima de ese tamaño) y `LIST_WINDOW = 2_000` (entradas visibles en la bitácora).
+  Son límites de **renderizado**, no del archivo de entrada: no existe un límite de 4 millones de
+  caracteres.
 
 ### Flujo principal
 
@@ -188,9 +199,10 @@ Para una entrada `X.in`, `file_name = ruta sin los últimos 3 caracteres` (norma
    - Traduce mensajes conocidos de `a.exe` a avisos en español, detecta archivos faltantes y
      muestra el primer problema en «Detalles».
    - Si hay secuencias, selecciona el primer recorrido disponible y lo muestra completo.
-5. `parse_maze` replica la lectura de C++ (flujo continuo, primeras `A`/`B`, límite de
-   4 000 000 de celdas) y acumula advertencias: celdas faltantes/extra, varias `A`/`B`,
-   caracteres desconocidos y longitudes de línea distintas a las columnas declaradas.
+5. `parse_maze` replica la lectura por líneas de C++: descarta la primera línea, usa el ancho de
+   la primera fila de la cuadrícula y conserva todos los caracteres. Rechaza archivos sin
+   cuadrícula o con filas de ancho distinto, y acumula advertencias: discrepancia con el
+   encabezado, varias `A`/`B` y caracteres desconocidos.
 6. `read_solution` lee `"fila col"` por línea, ignora vacías y descarta/contabiliza coordenadas
    fuera de rango o líneas inválidas.
 
@@ -202,7 +214,8 @@ Para una entrada `X.in`, `file_name = ruta sin los últimos 3 caracteres` (norma
 - Fondo de espacio profundo (`_draw_space`): tres nebulosas suaves con `stipple`, campo de
   estrellas aleatorio y destellos; `_twinkle_stars` parpadea estrellas cada 260–720 ms. El job
   `_star_job` se cancela al cerrar la ventana.
-- **Laberinto isométrico 3D**: cada celda se dibuja como un rombo. Las celdas de camino usan un
+- **Vista 2D (por defecto)**: canvas optimizado con bloques base por ejecuciones (run-length), líneas de rejilla condicionales, y overlays deducidos/pintados por bloques (`MAX_DRAW_CELLS = 60_000`). Mallas enormes (como 2001×2001) se aceptan sin error y se renderizan mediante downsampling automático.
+- **Laberinto isométrico 3D (opcional)**: cada celda se dibuja como un rombo. Las celdas de camino usan un
   rombo exterior oscuro + interior con margen; las paredes son prismas con cara superior y dos
   caras laterales (`WALL`, `WALL_SIDE_LIGHT`, `WALL_SIDE_DARK`). Todo el tablero flota sobre una
   plataforma con grosor y sombra. El orden de dibujo es por profundidad (`fila + columna`), de
@@ -210,7 +223,7 @@ Para una entrada `X.in`, `file_name = ruta sin los últimos 3 caracteres` (norma
   `(fila, col+1)` también es muro.
 - Para laberintos grandes se simplifica el dibujo: si `cell_px < 9.5` las celdas de camino se
   pintan como rombos planos sin margen; si `cell_px < 7.5` los muros omiten las caras laterales.
-  Esto evita moiré y mantiene fluida la vista de 100×100.
+  Esto evita moiré y mantiene fluida la vista de 100×100. La vista isométrica se desactiva automáticamente si la malla supera `MAX_ISO_CELLS = 25_000`, manteniéndose en 2D con aviso.
 - Paleta: muro `#26384a` (caras `#1a2836` / `#111c27`), camino `#466a78`, `A` verde salvia
   `#8fbfa8`, `B` rosa empolvado `#c08b9a`, desconocido `#4b4f5e`, rejilla `#223846`, acento
   `#8fc2cc`, estela arena `#cfa77f`. Sin colores neón.
@@ -253,13 +266,15 @@ python maze_gui.py laberinto_1.in
 ```
 
 Para `laberinto_1.in` (A en `(3,3)`, B en `(0,0)`) las soluciones deben ir de `0 0` (B) hasta
-`3 3` (A). Los `.sol` son artefactos locales ignorados por git; no commitearlos ni asumir que
-existen en un clon limpio.
+`3 3` (A). Para `laberinto_4.in` la cuadrícula real es `30 × 62` (A en `(17,14)`, B en
+`(29,12)`) y las coordenadas de los `.sol` deben caer dentro de esa cuadrícula. Los `.sol` son
+artefactos locales ignorados por git; no commitearlos ni asumir que existen en un clon limpio.
 
 ## 8. Convenciones de trabajo
 
 - No agregar dependencias ni frameworks sin necesidad; mantener C++ estándar y Tkinter puro.
-- Respetar el formato de `.sol` y la lectura por flujo continuo: la GUI y C++ deben coincidir.
+- Respetar el formato de `.sol` y la lectura por líneas (encabezado descartado, ancho de la
+  primera fila): la GUI y C++ deben coincidir.
 - No cambiar el orden de `movements` ni la semántica de los árboles sin actualizar este
   documento y revisar los recorridos esperados.
 - No commitear binarios (`a.exe`, `maze.exe`) ni `.sol`.

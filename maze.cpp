@@ -215,14 +215,16 @@ void solveMaze (string file_path) {
 
 vector<vector<char>> *loadMatrix(string file_path){
     ifstream fin(file_path);
-    int rows, cols;
-    fin>>rows;
-    fin>>cols;
-    auto m= new vector<vector<char> >(rows,vector<char>(cols));
-    for(auto &i: *m){
-        for(auto &j:i){
-            fin>>j;
+    
+    string line;
+    getline(fin,line);
+    auto m= new vector<vector<char>>;
+    while(getline(fin,line)){
+        vector<char> x;
+        for(auto &n: line){
+            x.push_back(n);
         }
+        m->push_back(move(x));
     }
     return m;
 }
@@ -338,17 +340,17 @@ unordered_map<int,Node*>* createTreeBFS(vector<vector<char>> *matrix){
                 child.second >= (*matrix)[0].size()
             )   continue;
             if(visited.find(getNodeNumber(child,COLS))!=visited.end()) continue;
+            if((*matrix)[child.first][child.second]==PATH_CHAR
+            ||(*matrix)[child.first][child.second]==TARGET_CHAR
+            ){
                 visited.insert(getNodeNumber(child,COLS));
-                if((*matrix)[child.first][child.second]==PATH_CHAR
-                    ||(*matrix)[child.first][child.second]==TARGET_CHAR
-                        ){
-                    tree->insert({getNodeNumber(child,COLS),new Node(child)});
-                    (*tree)[getNodeNumber(bfs_q.front(),COLS)]->addChildren((*tree)[getNodeNumber(child,COLS)]);
-                    bfs_q.push(child);
+                tree->insert({getNodeNumber(child,COLS),new Node(child)});
+                (*tree)[getNodeNumber(bfs_q.front(),COLS)]->addChildren((*tree)[getNodeNumber(child,COLS)]);
+                bfs_q.push(child);
                     // cout<<"BFS tree with "<<(*tree).size()<<" current nodes.\n";
-                }
             }
-            bfs_q.pop();
+        }
+        bfs_q.pop();
     }
     return tree;
 }
@@ -357,36 +359,49 @@ unordered_map<int,Node*>* createTreeBFS(vector<vector<char>> *matrix){
 unordered_map<int,Node*>* createTreeDFS(vector<vector<char>>* matrix){
     const int COLS=(*matrix)[0].size();
     unordered_map<int,Node*> *tree=new unordered_map<int,Node*>;
-    stack<pair<int,int>> dfs_st;
+    vector<pair<int,int>> dfs_st;
     
     set<pair<int,int>> visited;
     auto r=getNodeNumber(root_cords,COLS);
     tree->insert({r, new Node(root_cords)});
-    dfs_st.push(root_cords);
+    dfs_st.push_back(root_cords);
 
+    pair<int,int> last_valid=root_cords;
     while(dfs_st.size()){
-        auto current=dfs_st.top();
+        auto current=*(dfs_st.end()-1);
         visited.insert(current);
-        dfs_st.pop();
-
         // for(int i=(movements.size()-1);i>=0;i--){
         for(int i=0;i<movements.size();i++){
             pair<int,int> child={current.first+movements[i].first,current.second+movements[i].second };
-            if(visited.find(child)!=visited.end()) continue;
+            if(visited.find(child)!=visited.end()) {
+                if(i==3) dfs_st.pop_back();
+                continue;
+
+            }
+            
             if(
                 child.first <0||
                 child.second <0||
                 child.first >= (*matrix).size()||
                 child.second >= (*matrix)[0].size()
-                    )   continue;
+            ) {
+                if(i==3)
+                    dfs_st.pop_back();
+                continue;
+                }
             if((*matrix)[child.first][child.second]==PATH_CHAR
             ||(*matrix)[child.first][child.second]==TARGET_CHAR
             ){
-                
+                // if(i<3) last_valid=child;
                 auto childNode=new Node(child);
                 tree->insert({getNodeNumber(child,COLS),childNode});
                 (*tree)[getNodeNumber(current,COLS)]->addChildren(childNode);
-                dfs_st.push(child);
+                dfs_st.push_back(child);
+                visited.insert(child);
+                break;
+            }
+            else{
+                if(i==3) dfs_st.pop_back();
             }
             
         }
