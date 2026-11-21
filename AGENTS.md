@@ -249,7 +249,7 @@ Para una entrada `X.in`, `file_name = ruta sin los últimos 3 caracteres` (norma
 
 ### Detalles a tener en cuenta
 
-- La GUI asume `a.exe`, no `maze.exe`.
+- La ventana de exploración para abrir laberintos utiliza el directorio de trabajo actual (`os.getcwd()`) como ruta predeterminada (`initialdir`).
 - Compara `mtime` para no leer `.sol` viejos; si se reutilizan archivos con marcas de tiempo
   raras, pueden ignorarse.
 - Las rutas y mensajes de UI están en español; mantener ese idioma en textos nuevos.

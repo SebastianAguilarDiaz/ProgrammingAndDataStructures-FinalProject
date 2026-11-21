@@ -355,7 +355,10 @@ class MazeGui:
 
     def __init__(self, root, initial_file=None):
         self.root = root
-        self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        if getattr(sys, "frozen", False):
+            self.base_dir = sys._MEIPASS
+        else:
+            self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.exe_path = os.path.join(self.base_dir, "a.exe")
 
         self.maze = None
@@ -967,7 +970,7 @@ class MazeGui:
         path = filedialog.askopenfilename(
             parent=self.root,
             title="Selecciona un sector (.in)",
-            initialdir=self.base_dir,
+            initialdir=os.getcwd(),
             filetypes=[("Sectores", "*.in"), ("Todos los archivos", "*.*")],
         )
         if path:
